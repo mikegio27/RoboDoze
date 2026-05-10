@@ -35,7 +35,9 @@ ytdl_opts = {
 ytdl = YoutubeDL(ytdl_opts)  # type: ignore[arg-type]
 
 
-def format_duration(seconds: int) -> str:
+def format_duration(seconds: int | None) -> str:
+    if seconds is None:
+        return "LIVE"
     m, s = divmod(seconds, 60)
     h, m = divmod(m, 60)
     return f"{h}h {m:02}m {s:02}s" if h else f"{m:02}m {s:02}s"
@@ -84,6 +86,7 @@ class MusicSource(discord.PCMVolumeTransformer):
         self.title = data.get('title')
         self.web_url = data.get('webpage_url')
         self.duration = data.get('duration')
+        self.is_live: bool = bool(data.get('is_live'))
 
     def __getitem__(self, item: str):
         return self.__getattribute__(item)
@@ -454,14 +457,14 @@ class Music(commands.Cog):
             return await ctx.send(embed=embed)
 
         upcoming = player.queue.snapshot()
-        duration = format_duration(current.duration)
+        duration = "🔴 LIVE" if current.is_live else format_duration(current.duration)
         fmt = '\n'.join(
             f"`{i + 1}.` [{s['title']}]({s['webpage_url']}) | ` Requested by: {s['requester']}`\n"
             for i, s in enumerate(upcoming)
         )
         fmt = (
             f"\n__Now Playing__:\n[{current.title}]({current.web_url}) | "
-            f"` Duration {duration} Requested by: {current.requester}`\n\n__Up Next:__\n"
+            f"` {duration} Requested by: {current.requester}`\n\n__Up Next:__\n"
             + fmt
             + f"\n**{len(upcoming)} songs in queue**"
         )
@@ -483,7 +486,7 @@ class Music(commands.Cog):
             embed = discord.Embed(title="", description="I am currently not playing anything", color=discord.Color.green())
             return await ctx.send(embed=embed)
 
-        duration = format_duration(current.duration)
+        duration = "🔴 LIVE" if current.is_live else format_duration(current.duration)
         embed = discord.Embed(
             title="",
             description=f"[{current.title}]({current.web_url}) [{current.requester.mention}] | `{duration}`",
