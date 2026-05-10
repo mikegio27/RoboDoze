@@ -18,7 +18,7 @@ ALONE_TIMEOUT = 60  # seconds before auto-leaving an empty voice channel
 
 FFMPEG_OPTIONS = {
     'before_options': '-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn',
+    'options': '-vn -af aresample=async=1:first_pts=0',
 }
 
 ytdl_opts = {
