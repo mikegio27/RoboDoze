@@ -1,26 +1,36 @@
+import datetime
+import json
 import logging
 import os
+import sys
 
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-LOG_LEVEL = getattr(logging, LOG_LEVEL, logging.INFO)
+LOG_LEVEL = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+LOG_FORMAT = os.getenv("LOG_FORMAT", "text").lower()
 
-# Use consistent logger name across all modules
 logger = logging.getLogger("RoboDoze")
 logger.setLevel(LOG_LEVEL)
 
-formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(name)s: %(message)s")
 
-# File handler
-file_handler = logging.FileHandler("RoboDoze.log", mode="a")
-file_handler.setFormatter(formatter)
-file_handler.setLevel(LOG_LEVEL)
+class _JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict = {
+            "timestamp": datetime.datetime.utcfromtimestamp(record.created).isoformat() + "Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "line": record.lineno,
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload)
 
-# Stream handler (prints to console)
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(formatter)
-stream_handler.setLevel(LOG_LEVEL)
 
-# Add handlers once
 if not logger.hasHandlers():
-    logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
+    _handler = logging.StreamHandler(sys.stdout)
+    _handler.setLevel(LOG_LEVEL)
+    if LOG_FORMAT == "json":
+        _handler.setFormatter(_JsonFormatter())
+    else:
+        _handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] %(name)s: %(message)s"))
+    logger.addHandler(_handler)
