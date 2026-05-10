@@ -124,15 +124,26 @@ class MusicSource(discord.PCMVolumeTransformer):
         return {'webpage_url': data['webpage_url'], 'requester': ctx.author, 'title': data['title']}
 
     @classmethod
-    async def regather_stream(cls, data: dict[str, Any], *, requester=None) -> "MusicSource":
-        req = requester or data['requester']
+    async def fetch_stream_info(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """Fetch a fresh stream URL from yt-dlp without spawning FFmpeg."""
         to_run = partial(ytdl.extract_info, url=data['webpage_url'], download=False)
         async with asyncio.timeout(30):
             raw = await asyncio.get_running_loop().run_in_executor(_executor, to_run)
         if raw is None:
             raise ValueError(f"No stream data returned for {data['webpage_url']}")
         info: dict[str, Any] = raw  # type: ignore[assignment]
-        return cls(discord.FFmpegPCMAudio(info['url'], **FFMPEG_OPTIONS), data=info, requester=req)
+        return info
+
+    @classmethod
+    def from_stream_info(cls, info: dict[str, Any], requester) -> "MusicSource":
+        """Create a MusicSource from pre-fetched stream info. Spawns FFmpeg subprocess."""
+        return cls(discord.FFmpegPCMAudio(info['url'], **FFMPEG_OPTIONS), data=info, requester=requester)
+
+    @classmethod
+    async def regather_stream(cls, data: dict[str, Any], *, requester=None) -> "MusicSource":
+        req = requester or data['requester']
+        info = await cls.fetch_stream_info(data)
+        return cls.from_stream_info(info, req)
 
 
 class MusicPlayer:
@@ -170,18 +181,13 @@ class MusicPlayer:
     def _cancel_prefetch(self) -> None:
         if self._prefetch_task and not self._prefetch_task.done():
             self._prefetch_task.cancel()
-        if self._prefetched:
-            try:
-                self._prefetched.cleanup()
-            except Exception:
-                pass
         self._prefetch_task = None
         self._prefetched = None
 
     async def _prefetch_next(self, data: dict[str, Any]) -> None:
         try:
-            source = await MusicSource.regather_stream(data)
-            self._prefetched = source
+            info = await MusicSource.fetch_stream_info(data)
+            self._prefetched = info
             logger.debug(f"Prefetch complete: {data.get('title')}")
         except asyncio.CancelledError:
             raise
@@ -212,31 +218,34 @@ class MusicPlayer:
                 return
 
             if not isinstance(source, MusicSource):
-                prefetched_url = self._prefetched.web_url if self._prefetched else None
-                queued_url = source.get('webpage_url')
+                queued = source
+                queued_url = queued.get('webpage_url')
+                prefetched_url = self._prefetched.get('webpage_url') if self._prefetched else None
 
                 if self._prefetched is not None and prefetched_url == queued_url:
-                    source = self._prefetched
+                    info = self._prefetched
                     self._prefetched = None
                     self._prefetch_task = None
-                    logger.debug("Prefetch hit: using pre-fetched stream")
+                    source = MusicSource.from_stream_info(info, queued['requester'])
+                    logger.debug("Prefetch hit: spawning FFmpeg from pre-fetched URL")
                 elif self._prefetch_task and not self._prefetch_task.done():
                     try:
                         async with asyncio.timeout(30):
                             await self._prefetch_task
-                        if self._prefetched and self._prefetched.web_url == queued_url:
-                            source = self._prefetched
+                        if self._prefetched and self._prefetched.get('webpage_url') == queued_url:
+                            info = self._prefetched
                             self._prefetched = None
                             self._prefetch_task = None
-                            logger.debug("Prefetch hit (awaited)")
+                            source = MusicSource.from_stream_info(info, queued['requester'])
+                            logger.debug("Prefetch hit (awaited): spawning FFmpeg from pre-fetched URL")
                         else:
                             self._cancel_prefetch()
-                            source = await self._regather_with_retry(source)
+                            source = await self._regather_with_retry(queued)
                     except (asyncio.TimeoutError, asyncio.CancelledError):
                         self._cancel_prefetch()
-                        source = await self._regather_with_retry(source)
+                        source = await self._regather_with_retry(queued)
                 else:
-                    source = await self._regather_with_retry(source)
+                    source = await self._regather_with_retry(queued)
 
             if source is None:
                 continue
