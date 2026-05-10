@@ -15,7 +15,7 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdl")
 
 FFMPEG_OPTIONS = {
     'before_options': '-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-f s16le -ar 48000 -ac 2 -vn',
+    'options': '-vn',
 }
 
 ytdl_opts = {
