@@ -48,6 +48,24 @@ docker compose down
 
 ---
 
+## Pulling from GHCR
+
+Pre-built images are published to GitHub Container Registry on every merge to `main`. No semantic versioning — tags are:
+
+| Tag | Meaning |
+|---|---|
+| `latest` | most recent build from `main` |
+| `main` | same as `latest`, branch-named |
+| `<short-sha>` | exact commit (e.g. `a1b2c3d`) |
+
+```bash
+docker pull ghcr.io/mikegio27/robodoze:latest
+```
+
+Use this image in place of the locally-built `robodoze:local` wherever it appears below. For Kubernetes, update the `image:` field in `k8s/deployment.yaml` to the GHCR reference and set `imagePullPolicy: Always`.
+
+---
+
 ## Prerequisites (Kubernetes)
 
 - Docker

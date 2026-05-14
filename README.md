@@ -42,6 +42,18 @@ Set via environment variables (or a `.env` file when using Docker Compose):
 | `COMMAND_PREFIX` | No | `!dozy` | Bot command prefix |
 | `HEALTH_PORT` | No | `8080` | Port for the health server |
 
+## Docker image
+
+The image is published to GitHub Container Registry on every push to `main`:
+
+```
+ghcr.io/mikegio27/robodoze:latest
+ghcr.io/mikegio27/robodoze:main
+ghcr.io/mikegio27/robodoze:<short-sha>
+```
+
+Tags are managed by the CI workflow — there is no semantic versioning.
+
 ## Running locally
 
 ```bash
@@ -51,7 +63,7 @@ docker compose up --build
 
 ## Deployment
 
-See [DEPLOY.md](DEPLOY.md) for full instructions covering docker compose, minikube and k3s.
+See [DEPLOY.md](DEPLOY.md) for full instructions covering Docker Compose, minikube, k3s, and pulling from GHCR.
 
 ## Health endpoints
 
