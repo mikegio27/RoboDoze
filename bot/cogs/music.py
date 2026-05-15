@@ -190,10 +190,18 @@ class MusicSource(discord.PCMVolumeTransformer):
     async def fetch_playlist_entries(cls, ctx, url: str) -> list[dict[str, Any]]:
         """Fetch all video metadata from a playlist URL using flat extraction."""
         logger.debug(f"[{ctx.guild}] fetch_playlist_entries: fetching '{url}'")
-        to_run = partial(ytdl_flat.extract_info, url=url, download=False)
+
+        def _extract():
+            raw = ytdl_flat.extract_info(url=url, download=False)
+            if raw is None or 'entries' not in raw:
+                return None
+            # Force-consume any lazy iterator inside the executor thread so the
+            # generator's network calls don't bleed back into the event loop.
+            return {'title': raw.get('title', url), 'entries': list(raw['entries'])}
+
         try:
             async with asyncio.timeout(60):
-                raw = await asyncio.get_running_loop().run_in_executor(_executor, to_run)
+                result = await asyncio.get_running_loop().run_in_executor(_executor, _extract)
         except asyncio.TimeoutError:
             logger.warning(f"[{ctx.guild}] fetch_playlist_entries: timed out for '{url}'")
             await ctx.send(embed=discord.Embed(
@@ -201,17 +209,22 @@ class MusicSource(discord.PCMVolumeTransformer):
             ))
             return []
 
-        if raw is None or 'entries' not in raw:
+        if not result:
             logger.warning(f"[{ctx.guild}] fetch_playlist_entries: no entries found for '{url}'")
             return []
 
-        playlist_data: dict[str, Any] = raw  # type: ignore[assignment]
         entries = []
-        for entry in playlist_data['entries']:  # type: ignore[index]
+        for entry in result['entries']:
             if not entry:
                 continue
             video_id = entry.get('id')
             if not video_id:
+                # yt-dlp flat entries sometimes put just the bare ID in 'url'
+                raw_url = entry.get('url', '')
+                parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
+                video_id = (parsed_qs.get('v') or [None])[0] or (raw_url if raw_url and '/' not in raw_url else None)
+            if not video_id:
+                logger.debug(f"[{ctx.guild}] fetch_playlist_entries: skipping entry with no resolvable ID: {entry}")
                 continue
             entries.append({
                 'webpage_url': f"https://www.youtube.com/watch?v={video_id}",
@@ -222,8 +235,7 @@ class MusicSource(discord.PCMVolumeTransformer):
                 'is_live': bool(entry.get('is_live')),
             })
 
-        playlist_title = raw.get('title', url)
-        logger.debug(f"[{ctx.guild}] fetch_playlist_entries: found {len(entries)} tracks in '{playlist_title}'")
+        logger.debug(f"[{ctx.guild}] fetch_playlist_entries: found {len(entries)} tracks in '{result['title']}'")
         return entries
 
 
