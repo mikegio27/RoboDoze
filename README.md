@@ -18,7 +18,8 @@ Default prefix: `!dozy` (configurable via `COMMAND_PREFIX`)
 
 | Command | Aliases | Description |
 |---|---|---|
-| `play <query>` | `p`, `sing` | Search and queue a song |
+| `play <query>` | `p`, `sing` | Search and queue a single song |
+| `playlist <input>` | `pl` | Queue a YouTube playlist URL, or a comma-separated list of songs/URLs (e.g. `song1, song2, url3`) |
 | `join` | `j`, `connect` | Join your voice channel |
 | `leave` | `stop`, `dc`, `disconnect`, `bye` | Stop and disconnect |
 | `skip` | | Skip the current track |
@@ -26,7 +27,7 @@ Default prefix: `!dozy` (configurable via `COMMAND_PREFIX`)
 | `resume` | | Resume playback |
 | `loop` | `lp`, `repeat` | Toggle loop for the current track |
 | `shuffle` | `sh` | Shuffle the upcoming queue |
-| `queue` | `q`, `playlist`, `que` | Show the current queue |
+| `queue` | `q`, `que` | Show the current queue |
 | `np` | `song`, `current`, `playing` | Show what's playing now |
 | `volume [1-100]` | `v`, `vol` | Get or set volume |
 | `remove [pos]` | `rm`, `rem` | Remove a track (defaults to last) |

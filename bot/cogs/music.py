@@ -1,6 +1,7 @@
 import asyncio
 import collections
 import random
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Any
@@ -36,6 +37,24 @@ ytdl_opts = {
 }
 
 ytdl = YoutubeDL(ytdl_opts)  # type: ignore[arg-type]
+
+ytdl_flat_opts = {
+    **ytdl_opts,
+    'noplaylist': False,
+    'extract_flat': True,
+    'ignoreerrors': True,  # skip unavailable videos instead of aborting
+}
+ytdl_flat = YoutubeDL(ytdl_flat_opts)  # type: ignore[arg-type]
+
+
+def is_playlist_url(url: str) -> bool:
+    """True only for pure playlist URLs (/playlist?list=...), not video+list combos."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        return parsed.path == '/playlist' and 'list' in qs
+    except Exception:
+        return False
 
 
 def format_duration(seconds: int | None) -> str:
@@ -166,6 +185,46 @@ class MusicSource(discord.PCMVolumeTransformer):
         req = requester or data['requester']
         info = await cls.fetch_stream_info(data)
         return cls.from_stream_info(info, req)
+
+    @classmethod
+    async def fetch_playlist_entries(cls, ctx, url: str) -> list[dict[str, Any]]:
+        """Fetch all video metadata from a playlist URL using flat extraction."""
+        logger.debug(f"[{ctx.guild}] fetch_playlist_entries: fetching '{url}'")
+        to_run = partial(ytdl_flat.extract_info, url=url, download=False)
+        try:
+            async with asyncio.timeout(60):
+                raw = await asyncio.get_running_loop().run_in_executor(_executor, to_run)
+        except asyncio.TimeoutError:
+            logger.warning(f"[{ctx.guild}] fetch_playlist_entries: timed out for '{url}'")
+            await ctx.send(embed=discord.Embed(
+                description="Playlist took too long to load, please try again.", color=discord.Color.red()
+            ))
+            return []
+
+        if raw is None or 'entries' not in raw:
+            logger.warning(f"[{ctx.guild}] fetch_playlist_entries: no entries found for '{url}'")
+            return []
+
+        playlist_data: dict[str, Any] = raw  # type: ignore[assignment]
+        entries = []
+        for entry in playlist_data['entries']:  # type: ignore[index]
+            if not entry:
+                continue
+            video_id = entry.get('id')
+            if not video_id:
+                continue
+            entries.append({
+                'webpage_url': f"https://www.youtube.com/watch?v={video_id}",
+                'requester': ctx.author,
+                'title': entry.get('title', 'Unknown'),
+                'thumbnail': f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg",
+                'duration': entry.get('duration'),
+                'is_live': bool(entry.get('is_live')),
+            })
+
+        playlist_title = raw.get('title', url)
+        logger.debug(f"[{ctx.guild}] fetch_playlist_entries: found {len(entries)} tracks in '{playlist_title}'")
+        return entries
 
 
 class MusicPlayer:
@@ -581,6 +640,83 @@ class Music(commands.Cog):
             embed.set_thumbnail(url=source['thumbnail'])
         await ctx.send(embed=embed)
 
+    @commands.command(name='playlist', aliases=['pl'], description="queues a playlist URL or comma-separated songs/URLs")
+    async def playlist_(self, ctx, *, search: str):
+        """Queue a YouTube playlist URL or a comma-separated list of songs/URLs."""
+        logger.info(f"[{ctx.guild}] playlist '{search}' requested by {ctx.author} ({ctx.author.id})")
+        await ctx.typing()
+
+        vc = ctx.voice_client
+        if not vc:
+            await ctx.invoke(self.connect_)
+
+        player = self.get_player(ctx)
+
+        if is_playlist_url(search):
+            await self._handle_playlist(ctx, player, search)
+            return
+
+        items = [item.strip() for item in search.split(',') if item.strip()]
+        if not items:
+            await ctx.send(embed=discord.Embed(description="Nothing to queue.", color=discord.Color.red()))
+            return
+
+        status_msg = await ctx.send(embed=discord.Embed(
+            description=f"⏳ Loading {len(items)} song(s)...", color=discord.Color.blurple()
+        ))
+
+        queued = 0
+        failed = 0
+        for item in items:
+            if player.queue.full():
+                break
+            source = await MusicSource.create_source(ctx, item, download=False)
+            if source is None:
+                failed += 1
+                continue
+            try:
+                player.queue.put_nowait(source)
+                queued += 1
+            except asyncio.QueueFull:
+                break
+
+        skipped = len(items) - queued - failed
+        logger.info(f"[{ctx.guild}] playlist_: queued {queued}, failed {failed}, skipped {skipped}")
+
+        desc = f"Queued **{queued}** track(s)"
+        if failed:
+            desc += f"\n⚠️ {failed} not found"
+        if skipped:
+            desc += f"\n⚠️ {skipped} skipped — queue full ({MAX_QUEUE_SIZE} max)"
+        await status_msg.edit(embed=discord.Embed(description=desc, color=discord.Color.green()))
+
+    async def _handle_playlist(self, ctx, player: MusicPlayer, url: str) -> None:
+        status_msg = await ctx.send(embed=discord.Embed(
+            description="⏳ Loading playlist...", color=discord.Color.blurple()
+        ))
+        entries = await MusicSource.fetch_playlist_entries(ctx, url)
+        if not entries:
+            await status_msg.edit(embed=discord.Embed(
+                description="No tracks found in that playlist.", color=discord.Color.red()
+            ))
+            return
+
+        queued = 0
+        for entry in entries:
+            try:
+                player.queue.put_nowait(entry)
+                queued += 1
+            except asyncio.QueueFull:
+                break
+
+        skipped = len(entries) - queued
+        logger.info(f"[{ctx.guild}] _handle_playlist: queued {queued} tracks, skipped {skipped} (url={url})")
+
+        desc = f"Queued **{queued}** tracks from playlist"
+        if skipped:
+            desc += f"\n⚠️ {skipped} tracks skipped — queue full ({MAX_QUEUE_SIZE} max)"
+        await status_msg.edit(embed=discord.Embed(description=desc, color=discord.Color.green()))
+
     @commands.command(name='pause', description="pauses music")
     async def pause_(self, ctx):
         """Pause the currently playing song."""
@@ -695,7 +831,7 @@ class Music(commands.Cog):
         player.queue.clear_all()
         await ctx.send('**Cleared**')
 
-    @commands.command(name='queue', aliases=['q', 'playlist', 'que'], description="shows the queue")
+    @commands.command(name='queue', aliases=['q', 'que'], description="shows the queue")
     async def queue_info(self, ctx):
         """Retrieve a basic queue of upcoming songs."""
         vc = ctx.voice_client
