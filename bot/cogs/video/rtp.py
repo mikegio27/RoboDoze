@@ -9,13 +9,15 @@ from utils.logging import logger
 
 IVF_GLOBAL_HEADER_SIZE = 32
 IVF_FRAME_HEADER_SIZE = 12
-VP8_RTP_PT = 96            # dynamic payload type for VP8
+VP8_RTP_PT = 105           # Discord's negotiated PT for VP8 (per @dank074/discord-video-stream)
 VIDEO_TS_CLOCK = 90_000    # Hz — standard video RTP clock
 MAX_RTP_PAYLOAD = 1100     # safe UDP MTU minus RTP header/auth tag/IPsec overhead
 
 # RTP header byte 1 values (M = marker bit, PT = payload type)
-RTP_M0_PT96 = 0x60   # M=0, PT=96 (mid-frame fragment)
-RTP_M1_PT96 = 0xE0   # M=1, PT=96 (last fragment of a frame)
+# 0x69 = 0_1101001 = M=0, PT=105 (mid-frame fragment)
+# 0xE9 = 1_1101001 = M=1, PT=105 (last fragment of a frame)
+RTP_M0 = 0x00 | VP8_RTP_PT
+RTP_M1 = 0x80 | VP8_RTP_PT
 
 # ── READY payload parser ───────────────────────────────────────────────────────
 # Discord's VOICE READY payload includes a `streams` array that discord.py
@@ -161,18 +163,38 @@ class VideoRTPSender:
                 pass
 
     def _send_frame(self, vp8_frame: bytes, video_ssrc: int) -> int:
-        """Fragment a VP8 frame across one or more RTP packets per RFC 7741.
+        """Encrypt a VP8 frame with DAVE (whole-frame), then fragment the
+        encrypted blob across RTP packets per RFC 7741.
 
         Returns the number of UDP packets actually sent for this frame.
+
+        Per @dank074/discord-video-stream + davey codec_utils.rs:
+          - davey.encrypt operates on the FULL raw VP8 frame
+          - davey reads frame[0] bit 0 to identify keyframe vs delta
+          - DAVE output is then fragmented across RTP packets, each with a
+            1-byte VP8 RTP payload descriptor (RFC 7741 §4.2)
         """
         conn = self._vc._connection
         if not conn.can_encrypt:
             return 0
 
-        # Slice the frame into MTU-sized chunks
+        # Layer 1 — DAVE end-to-end encrypts the WHOLE raw VP8 frame
+        if conn.dave_session:
+            try:
+                codec_payload = conn.dave_session.encrypt(
+                    davey.MediaType.video, davey.Codec.vp8, vp8_frame
+                )
+            except Exception as exc:
+                logger.warning(f'[rtp] davey encrypt failed: {exc!r}')
+                return 0
+        else:
+            codec_payload = vp8_frame
+
+        # Layer 2 — Fragment the codec payload across RTP packets.
+        # Each fragment gets a 1-byte VP8 RTP payload descriptor prepended.
         fragments: list[bytes] = [
-            vp8_frame[i:i + MAX_RTP_PAYLOAD]
-            for i in range(0, len(vp8_frame), MAX_RTP_PAYLOAD)
+            codec_payload[i:i + MAX_RTP_PAYLOAD - 1]   # -1 to leave room for descriptor
+            for i in range(0, len(codec_payload), MAX_RTP_PAYLOAD - 1)
         ] or [b'']
 
         sent = 0
@@ -185,22 +207,16 @@ class VideoRTPSender:
             descriptor = bytes([0x10 if is_first else 0x00])
             rtp_payload = descriptor + chunk
 
-            # Layer 1 — DAVE end-to-end (if active)
-            if conn.dave_session:
-                rtp_payload = conn.dave_session.encrypt(
-                    davey.MediaType.video, davey.Codec.vp8, rtp_payload
-                )
-
-            # Layer 2 — RTP header (marker bit set only on last fragment)
+            # RTP header (marker bit set only on last fragment of frame)
             header = bytearray(12)
             header[0] = 0x80
-            header[1] = RTP_M1_PT96 if is_last else RTP_M0_PT96
+            header[1] = RTP_M1 if is_last else RTP_M0
             struct.pack_into('>H', header, 2, self._seq)
             struct.pack_into('>I', header, 4, self._ts)
             struct.pack_into('>I', header, 8, video_ssrc)
             self._seq = (self._seq + 1) & 0xFFFF
 
-            # Layer 3 — transport encryption (aead_xchacha20_poly1305_rtpsize)
+            # Layer 3 — Transport encryption (aead_xchacha20_poly1305_rtpsize)
             box = nacl.secret.Aead(bytes(conn.secret_key))
             nonce = bytearray(24)
             struct.pack_into('>I', nonce, 0, self._nonce)
