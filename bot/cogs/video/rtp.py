@@ -2,6 +2,7 @@ import asyncio
 import struct
 
 import davey
+import discord.gateway as _gw
 import nacl.secret
 
 from utils.logging import logger
@@ -11,30 +12,35 @@ IVF_FRAME_HEADER_SIZE = 12
 VP8_RTP_PT = 96        # dynamic payload type for VP8
 VIDEO_TS_CLOCK = 90_000  # Hz — standard video RTP clock
 
-# ── Step 2a: READY payload probe ──────────────────────────────────────────────
-# Monkey-patch VoiceConnectionState.initial_connection once to log the full
-# READY payload from Discord's voice server. The payload likely contains a
-# `streams` array or `video_ssrc` field that discord.py ignores. Run the bot,
-# join a video channel, check logs, then confirm or update VIDEO_SSRC_OFFSET.
-# Remove this block once the SSRC strategy is confirmed.
-
-import discord.gateway as _gw
+# ── READY payload parser ───────────────────────────────────────────────────────
+# Discord's VOICE READY payload includes a `streams` array that discord.py
+# ignores. We patch initial_connection to extract the video SSRC and store it
+# as `video_ssrc` on the VoiceConnectionState for use by VideoRTPSender.
+#
+# Confirmed from live payload:
+#   {"streams": [{"type": "video", "ssrc": N+1, "rtx_ssrc": N+2, ...}], "ssrc": N, ...}
 
 _orig_initial_connection = _gw.DiscordVoiceWebSocket.initial_connection
 
 
 async def _patched_initial_connection(self, data: dict) -> None:
-    logger.info(f'[rtp probe] VOICE READY payload: {data}')
+    streams = data.get('streams', [])
+    video_stream = next((s for s in streams if s.get('type') == 'video'), None)
+    if video_stream:
+        self._connection.video_ssrc = video_stream['ssrc']
+        logger.info(
+            f'[rtp] audio_ssrc={data.get("ssrc")} '
+            f'video_ssrc={video_stream["ssrc"]} '
+            f'rtx_ssrc={video_stream.get("rtx_ssrc")}'
+        )
+    else:
+        self._connection.video_ssrc = None
+        logger.warning('[rtp] VOICE READY contained no video stream entry')
     return await _orig_initial_connection(self, data)
 
 
 _gw.DiscordVoiceWebSocket.initial_connection = _patched_initial_connection
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Offset from audio SSRC to derive video SSRC.
-# Discord convention (unconfirmed): video_ssrc = audio_ssrc + 1.
-# Update this if the READY payload probe (above) shows a different value.
-VIDEO_SSRC_OFFSET = 1
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 class VideoRTPSender:
@@ -134,8 +140,8 @@ class VideoRTPSender:
         else:
             payload = vp8_frame
 
-        # Layer 2 — RTP header (VP8: PT=96, 90kHz clock, video SSRC)
-        video_ssrc = conn.ssrc + VIDEO_SSRC_OFFSET
+        # Layer 2 — RTP header (VP8: PT=96, 90kHz clock, video SSRC from READY)
+        video_ssrc: int = getattr(conn, 'video_ssrc', None) or (conn.ssrc + 1)
         header = bytearray(12)
         header[0] = 0x80
         header[1] = 0x60  # M=0, PT=96
