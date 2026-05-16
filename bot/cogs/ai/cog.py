@@ -2,9 +2,7 @@ import asyncio
 import collections
 import os
 
-import discord
 from discord.ext import commands
-
 from utils.logging import logger
 
 AI_HISTORY_LIMIT = int(os.getenv("AI_HISTORY_LIMIT", "50"))
@@ -22,7 +20,9 @@ class AI(commands.Cog):
         self.memory: dict[int, collections.deque] = {}
 
     def get_history(self, guild_id: int) -> collections.deque:
-        return self.memory.setdefault(guild_id, collections.deque(maxlen=AI_HISTORY_LIMIT))
+        return self.memory.setdefault(
+            guild_id, collections.deque(maxlen=AI_HISTORY_LIMIT)
+        )
 
     @commands.command(name="ask", help="Talk to RoboDoze's AI brain")
     async def ask(self, ctx, *, prompt: str):
@@ -40,10 +40,6 @@ class AI(commands.Cog):
     async def reset_memory(self, ctx):
         self.memory[ctx.guild.id] = collections.deque(maxlen=AI_HISTORY_LIMIT)
         await ctx.send("RoboDoze's memory has been wiped.")
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        logger.info("AI cog loaded and ready.")
 
 
 async def setup(bot: commands.Bot) -> None:

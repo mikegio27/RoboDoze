@@ -145,6 +145,14 @@ class MusicPlayer:
                     source = await self.queue.get()
                 logger.debug(f"[{self._guild}] player_loop: dequeued item type={type(source).__name__}")
             except asyncio.TimeoutError:
+                video_cog = self.bot.cogs.get('Video')
+                if video_cog and self._guild.id in video_cog.players:
+                    logger.info(f"[{self._guild}] player_loop: music idle but video player active — exiting music loop only")
+                    try:
+                        del self._cog.players[self._guild.id]
+                    except KeyError:
+                        pass
+                    return
                 logger.info(f"[{self._guild}] player_loop: queue idle for 300s — destroying player")
                 try:
                     await self._channel.send("Queue finished and idle too long — leaving voice. 👋")

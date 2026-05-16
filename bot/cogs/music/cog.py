@@ -112,12 +112,14 @@ class Music(commands.Cog):
         return player
 
     @commands.command(name='join', aliases=['connect', 'j'], description="connects to voice")
-    async def connect_(self, ctx, *, channel: discord.VoiceChannel = None):
+    async def connect_(self, ctx, *, channel: discord.VoiceChannel | None = None):
         """Connect to voice."""
         if not channel:
             try:
                 channel = ctx.author.voice.channel
             except AttributeError:
+                channel = None
+            if not channel:
                 embed = discord.Embed(
                     title="",
                     description="No channel to join. Please call the join command from a voice channel.",
@@ -129,7 +131,7 @@ class Music(commands.Cog):
         vc = ctx.voice_client
 
         if vc:
-            if vc.channel.id == channel.id:
+            if vc.channel and vc.channel.id == channel.id:
                 logger.debug(f"[{ctx.guild}] connect_: already in '{channel}', doing nothing")
                 return
             logger.debug(f"[{ctx.guild}] connect_: moving from '{vc.channel}' to '{channel}'")
@@ -175,7 +177,7 @@ class Music(commands.Cog):
             return
 
         position = player.queue.qsize()
-        logger.debug(f"[{ctx.guild}] play_: queued '{source.get('title')}' at position #{position}")
+        logger.debug(f"[{ctx.guild}] play_: queued '{source['title']}' at position #{position}")
 
         embed = discord.Embed(
             title="",
@@ -183,7 +185,7 @@ class Music(commands.Cog):
             color=discord.Color.green(),
         )
         embed.set_footer(text=f"Position #{position} in queue")
-        if source.get('thumbnail'):
+        if isinstance(source, dict) and source.get('thumbnail'):
             embed.set_thumbnail(url=source['thumbnail'])
         await ctx.send(embed=embed)
 

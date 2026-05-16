@@ -24,7 +24,7 @@ _orig_initial_connection = _gw.DiscordVoiceWebSocket.initial_connection
 
 
 async def _patched_initial_connection(self, data: dict) -> None:
-    logger.debug(f'[rtp probe] VOICE READY payload: {data}')
+    logger.info(f'[rtp probe] VOICE READY payload: {data}')
     return await _orig_initial_connection(self, data)
 
 

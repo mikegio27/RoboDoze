@@ -34,6 +34,14 @@ _ytdl_opts: dict[str, Any] = {
 }
 _ytdl = YoutubeDL(_ytdl_opts)  # type: ignore[arg-type]
 
+# Separate instance for video-only stream resolution.
+# Prefers VP9/webm since FFmpeg can transcode it to VP8; falls back to any video.
+_ytdl_video_opts: dict[str, Any] = {
+    **_ytdl_opts,
+    "format": "bestvideo[height<=720][ext=webm]/bestvideo[height<=720]/bestvideo",
+}
+_ytdl_video = YoutubeDL(_ytdl_video_opts)  # type: ignore[arg-type]
+
 
 @dataclass
 class VideoInfo:
@@ -121,6 +129,24 @@ class VideoInfo:
             raise ValueError(f"No stream data for {self.webpage_url}")
         info: Any = raw
         return info.get("url", "")
+
+    async def regather_video(self) -> str:
+        """Return a direct video CDN URL suitable for FFmpeg.
+        For YouTube this re-fetches using a video-only format selector so FFmpeg
+        gets a real stream URL rather than the webpage URL."""
+        if self.source_type != "youtube" or not self.webpage_url:
+            return self.video_url
+        to_run = partial(_ytdl_video.extract_info, url=self.webpage_url, download=False)
+        async with asyncio.timeout(30):
+            raw = await asyncio.get_running_loop().run_in_executor(_executor, to_run)
+        if raw is None:
+            raise ValueError(f"No video stream data for {self.webpage_url}")
+        info: Any = raw
+        url: str = info.get("url", "")
+        if not url:
+            raise ValueError(f"yt-dlp returned no video URL for {self.webpage_url}")
+        logger.debug(f"regather_video: resolved video stream for {self.title!r}")
+        return url
 
 
 class VideoAudioSource(discord.PCMVolumeTransformer):

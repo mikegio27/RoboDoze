@@ -82,6 +82,14 @@ class VideoPlayer:
                 async with asyncio.timeout(300):
                     info: VideoInfo = await self.queue.get()
             except asyncio.TimeoutError:
+                music_cog = self.bot.cogs.get('Music')
+                if music_cog and self._guild.id in music_cog.players:
+                    logger.info(f'[{self._guild}] VideoPlayer: video idle but music player active — exiting video loop only')
+                    try:
+                        del self._cog.players[self._guild.id]
+                    except KeyError:
+                        pass
+                    return
                 logger.info(f'[{self._guild}] VideoPlayer: idle 300s — destroying')
                 try:
                     await self._channel.send('Video queue empty too long — leaving. 👋')
@@ -117,8 +125,14 @@ class VideoPlayer:
             if self._rtp_sender is None:
                 self._rtp_sender = VideoRTPSender(vc)
 
+            try:
+                video_url = await info.regather_video()
+            except Exception as exc:
+                logger.warning(f'[{self._guild}] VideoPlayer: could not resolve video URL for {info.title!r} — {exc!r}')
+                video_url = info.video_url
+
             vc.play(source, after=self._after_play)
-            self._rtp_sender.start(info.video_url)
+            self._rtp_sender.start(video_url)
 
             embed = discord.Embed(
                 title='Now playing',
