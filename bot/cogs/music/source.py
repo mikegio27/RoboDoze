@@ -111,7 +111,15 @@ class MusicSource(discord.PCMVolumeTransformer):
 
         if download:
             source = ytdl.prepare_filename(data)  # type: ignore[arg-type]
-            return cls(discord.FFmpegPCMAudio(source, **FFMPEG_OPTIONS), data=data, requester=ctx.author)
+            return cls(
+                discord.FFmpegPCMAudio(
+                    source,
+                    before_options=FFMPEG_OPTIONS['before_options'],
+                    options=FFMPEG_OPTIONS['options'],
+                ),
+                data=data,
+                requester=ctx.author,
+            )
 
         return {
             'webpage_url': data['webpage_url'],
@@ -139,7 +147,15 @@ class MusicSource(discord.PCMVolumeTransformer):
     def from_stream_info(cls, info: dict[str, Any], requester) -> "MusicSource":
         """Create a MusicSource from pre-fetched stream info. Spawns FFmpeg subprocess."""
         logger.debug(f"from_stream_info: spawning FFmpeg for '{info.get('title')}'")
-        return cls(discord.FFmpegPCMAudio(info['url'], **FFMPEG_OPTIONS), data=info, requester=requester)
+        return cls(
+            discord.FFmpegPCMAudio(
+                info['url'],
+                before_options=FFMPEG_OPTIONS['before_options'],
+                options=FFMPEG_OPTIONS['options'],
+            ),
+            data=info,
+            requester=requester,
+        )
 
     @classmethod
     async def regather_stream(cls, data: dict[str, Any], *, requester=None) -> "MusicSource":
@@ -158,7 +174,8 @@ class MusicSource(discord.PCMVolumeTransformer):
                 return None
             # Force-consume any lazy iterator inside the executor thread so the
             # generator's network calls don't bleed back into the event loop.
-            return {'title': raw.get('title', url), 'entries': list(raw['entries'])}
+            info: Any = raw
+            return {'title': info.get('title', url), 'entries': list(info['entries'])}
 
         try:
             async with asyncio.timeout(60):
