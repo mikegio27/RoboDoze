@@ -12,7 +12,7 @@ token = os.getenv("DISCORD_TOKEN")
 if not token:
     sys.exit("DISCORD_TOKEN environment variable is not set.")
 
-EXTENSIONS = ['cogs.music', 'cogs.ai']
+EXTENSIONS = ['cogs.music', 'cogs.ai', 'cogs.video']
 
 intents = discord.Intents.default()
 intents.message_content = True
