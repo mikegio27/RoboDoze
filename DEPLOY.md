@@ -30,6 +30,7 @@ docker compose up --build -d
 docker compose logs -f
 curl http://localhost:8080/healthz   # always 200 while the container is alive
 curl http://localhost:8080/readyz    # 200 after Discord on_ready fires
+curl http://localhost:8080/metrics   # Prometheus exposition format
 ```
 
 ### Update flow
@@ -162,3 +163,40 @@ kubectl rollout status deployment/robodoze
 ```bash
 kubectl delete -k k8s/
 ```
+
+---
+
+## Observability (LGTM stack)
+
+The bot exposes Prometheus metrics on the same port as the health server at
+`GET /metrics` (default `:8080`). Point Prometheus/Mimir at it via pod
+annotations:
+
+```yaml
+metadata:
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+```
+
+…or, with the Prometheus Operator, a `ServiceMonitor` selecting the bot's
+Service on the `8080` port and `/metrics` path.
+
+### Metrics emitted
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `robodoze_guilds` | gauge | — | Servers the bot is in |
+| `robodoze_voice_connections_active` | gauge | — | Live voice connections |
+| `robodoze_players_active` | gauge | — | Active music players |
+| `robodoze_queued_tracks` | gauge | — | Tracks queued across all players |
+| `robodoze_commands_total` | counter | `command`, `status` | Commands invoked (success/error) |
+| `robodoze_command_duration_seconds` | histogram | `command` | Command handling latency |
+| `robodoze_tracks_queued_total` | counter | `kind` (play/playlist) | Tracks added to a queue |
+| `robodoze_streams_started_total` | counter | — | Audio streams started |
+| `robodoze_audio_bytes_streamed_total` | counter | — | PCM bytes streamed to Discord |
+| `robodoze_stream_errors_total` | counter | `stage` (resolve/playback) | Stream failures |
+| `robodoze_source_resolve_seconds` | histogram | — | yt-dlp resolution time |
+
+Standard `python_*` / `process_*` runtime metrics are included automatically.

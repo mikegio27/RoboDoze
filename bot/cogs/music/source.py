@@ -1,4 +1,5 @@
 import asyncio
+import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -8,6 +9,7 @@ import discord
 from discord.ext import commands
 from yt_dlp import YoutubeDL
 
+from utils import metrics
 from utils.logging import logger
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdl")
@@ -84,13 +86,21 @@ class MusicSource(discord.PCMVolumeTransformer):
     def __getitem__(self, item: str):
         return self.__getattribute__(item)
 
+    def read(self) -> bytes:
+        data = super().read()
+        if data:
+            metrics.audio_bytes_streamed_total.inc(len(data))
+        return data
+
     @classmethod
     async def create_source(cls, ctx, search: str, *, download: bool = False):
         logger.debug(f"[{ctx.guild}] create_source: searching for '{search}' (download={download})")
         to_run = partial(ytdl.extract_info, url=search, download=download)
+        started = time.perf_counter()
         try:
             async with asyncio.timeout(30):
                 raw = await asyncio.get_running_loop().run_in_executor(_executor, to_run)
+            metrics.source_resolve_seconds.observe(time.perf_counter() - started)
         except asyncio.TimeoutError:
             logger.warning(f"[{ctx.guild}] create_source: yt-dlp timed out for '{search}'")
             await ctx.send(embed=discord.Embed(
@@ -135,8 +145,10 @@ class MusicSource(discord.PCMVolumeTransformer):
         """Fetch a fresh stream URL from yt-dlp without spawning FFmpeg."""
         logger.debug(f"fetch_stream_info: fetching stream for '{data.get('title')}' ({data.get('webpage_url')})")
         to_run = partial(ytdl.extract_info, url=data['webpage_url'], download=False)
+        started = time.perf_counter()
         async with asyncio.timeout(30):
             raw = await asyncio.get_running_loop().run_in_executor(_executor, to_run)
+        metrics.source_resolve_seconds.observe(time.perf_counter() - started)
         if raw is None:
             raise ValueError(f"No stream data returned for {data['webpage_url']}")
         info: dict[str, Any] = raw  # type: ignore[assignment]

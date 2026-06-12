@@ -5,6 +5,7 @@ from typing import Any
 
 import discord
 
+from utils import metrics
 from utils.logging import logger
 from .source import ALONE_TIMEOUT, MAX_QUEUE_SIZE, MusicSource, format_duration
 
@@ -78,6 +79,7 @@ class MusicPlayer:
 
     def _after_play(self, error: Exception | None) -> None:
         if error:
+            metrics.stream_errors_total.labels(stage="playback").inc()
             logger.error(f"[{self._guild}] _after_play: playback error — {error!r}")
         else:
             title = self.current.title if self.current else "<unknown>"
@@ -127,6 +129,7 @@ class MusicPlayer:
             logger.debug(f"[{self._guild}] _regather_with_retry: success for '{title}'")
             return source
         except Exception as e:
+            metrics.stream_errors_total.labels(stage="resolve").inc()
             logger.error(f"[{self._guild}] _regather_with_retry: failed for '{title}' — {e!r}")
             await self._channel.send(f'There was an error processing your song: {e}')
             return None
@@ -223,6 +226,7 @@ class MusicPlayer:
                     f"duration={duration_str} | channel='{vc.channel}'"
                 )
                 vc.play(source, after=self._after_play)
+                metrics.streams_started_total.inc()
 
                 embed = discord.Embed(
                     title="Now playing",

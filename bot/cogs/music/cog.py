@@ -4,6 +4,7 @@ import random
 import discord
 from discord.ext import commands
 
+from utils import metrics
 from utils.logging import logger
 from .source import (
     ALONE_TIMEOUT, MAX_QUEUE_SIZE,
@@ -176,6 +177,7 @@ class Music(commands.Cog):
             ))
             return
 
+        metrics.tracks_queued_total.labels(kind="play").inc()
         position = player.queue.qsize()
         logger.debug(f"[{ctx.guild}] play_: queued '{source['title']}' at position #{position}")
 
@@ -229,6 +231,7 @@ class Music(commands.Cog):
             except asyncio.QueueFull:
                 break
 
+        metrics.tracks_queued_total.labels(kind="playlist").inc(queued)
         skipped = len(items) - queued - failed
         logger.info(f"[{ctx.guild}] playlist_: queued {queued}, failed {failed}, skipped {skipped}")
 
@@ -258,6 +261,7 @@ class Music(commands.Cog):
             except asyncio.QueueFull:
                 break
 
+        metrics.tracks_queued_total.labels(kind="playlist").inc(queued)
         skipped = len(entries) - queued
         logger.info(f"[{ctx.guild}] _handle_playlist: queued {queued} tracks, skipped {skipped} (url={url})")
 
