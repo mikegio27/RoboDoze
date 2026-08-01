@@ -1,0 +1,15 @@
+[tool.ruff]
+# Matches the deployed interpreter (Dockerfile: python:3.12-slim).
+target-version = "py312"
+# Matches PYTHONPATH=/app/bot (Dockerfile), so `cogs`, `utils` and `health`
+# are recognised as first-party imports rather than third-party.
+src = ["bot"]
+
+[tool.basedpyright]
+# Same reason as ruff's `src` above: the runtime puts bot/ on sys.path, so
+# `from utils import ...` resolves even though it looks unrooted.
+extraPaths = ["bot"]
+# basedpyright defaults to "recommended", which turns on the reportUnknown*
+# family and produces ~900 warnings against this (largely untyped) codebase.
+# "standard" is pyright's default and reports real type errors only.
+typeCheckingMode = "standard"

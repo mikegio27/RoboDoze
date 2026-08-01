@@ -13,8 +13,12 @@ async def _healthz(_request: aiohttp.web.Request) -> aiohttp.web.Response:
 
 async def _readyz(bot, request: aiohttp.web.Request) -> aiohttp.web.Response:
     if bot.is_ready():
-        return aiohttp.web.Response(text='{"status":"ready"}', content_type="application/json")
-    return aiohttp.web.Response(status=503, text='{"status":"not ready"}', content_type="application/json")
+        return aiohttp.web.Response(
+            text='{"status":"ready"}', content_type="application/json"
+        )
+    return aiohttp.web.Response(
+        status=503, text='{"status":"not ready"}', content_type="application/json"
+    )
 
 
 async def _metrics(_request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -22,7 +26,9 @@ async def _metrics(_request: aiohttp.web.Request) -> aiohttp.web.Response:
     return aiohttp.web.Response(body=payload, headers={"Content-Type": content_type})
 
 
-async def start_health_server(bot, host: str = "0.0.0.0", port: int = 8080) -> aiohttp.web.AppRunner:
+async def start_health_server(
+    bot, host: str = "0.0.0.0", port: int = 8080
+) -> aiohttp.web.AppRunner:
     metrics.bind_runtime_gauges(bot)
 
     app = aiohttp.web.Application()

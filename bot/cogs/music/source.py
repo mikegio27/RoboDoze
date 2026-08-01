@@ -18,31 +18,31 @@ MAX_QUEUE_SIZE = 50
 ALONE_TIMEOUT = 60  # seconds before auto-leaving an empty voice channel
 
 FFMPEG_OPTIONS = {
-    'before_options': '-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn -af aresample=async=1:first_pts=0',
+    "before_options": "-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn -af aresample=async=1:first_pts=0",
 }
 
 ytdl_opts = {
-    'format': 'bestaudio/best',
-    'restrictfilenames': True,
-    'noplaylist': True,
-    'nocheckcertificate': True,
-    'ignoreerrors': False,
-    'logtostderr': False,
-    'quiet': True,
-    'no_warnings': True,
-    'default_search': 'auto',
-    'source_address': '0.0.0.0',
-    'socket_timeout': 15,
+    "format": "bestaudio/best",
+    "restrictfilenames": True,
+    "noplaylist": True,
+    "nocheckcertificate": True,
+    "ignoreerrors": False,
+    "logtostderr": False,
+    "quiet": True,
+    "no_warnings": True,
+    "default_search": "auto",
+    "source_address": "0.0.0.0",
+    "socket_timeout": 15,
 }
 
 ytdl = YoutubeDL(ytdl_opts)  # type: ignore[arg-type]
 
 ytdl_flat_opts = {
     **ytdl_opts,
-    'noplaylist': False,
-    'extract_flat': True,
-    'ignoreerrors': True,  # skip unavailable videos instead of aborting
+    "noplaylist": False,
+    "extract_flat": True,
+    "ignoreerrors": True,  # skip unavailable videos instead of aborting
 }
 ytdl_flat = YoutubeDL(ytdl_flat_opts)  # type: ignore[arg-type]
 
@@ -52,8 +52,9 @@ def is_playlist_url(url: str) -> bool:
     try:
         parsed = urllib.parse.urlparse(url)
         qs = urllib.parse.parse_qs(parsed.query)
-        return parsed.path == '/playlist' and 'list' in qs
-    except Exception:
+        return parsed.path == "/playlist" and "list" in qs
+    except ValueError:
+        # urlparse/parse_qs raise ValueError on malformed input (e.g. bad IPv6 literals).
         return False
 
 
@@ -77,11 +78,11 @@ class MusicSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, requester):
         super().__init__(source)
         self.requester = requester
-        self.title = data.get('title')
-        self.web_url = data.get('webpage_url')
-        self.duration = data.get('duration')
-        self.thumbnail = data.get('thumbnail')
-        self.is_live: bool = bool(data.get('is_live'))
+        self.title = data.get("title")
+        self.web_url = data.get("webpage_url")
+        self.duration = data.get("duration")
+        self.thumbnail = data.get("thumbnail")
+        self.is_live: bool = bool(data.get("is_live"))
 
     def __getitem__(self, item: str):
         return self.__getattribute__(item)
@@ -94,57 +95,75 @@ class MusicSource(discord.PCMVolumeTransformer):
 
     @classmethod
     async def create_source(cls, ctx, search: str, *, download: bool = False):
-        logger.debug(f"[{ctx.guild}] create_source: searching for '{search}' (download={download})")
+        logger.debug(
+            f"[{ctx.guild}] create_source: searching for '{search}' (download={download})"
+        )
         to_run = partial(ytdl.extract_info, url=search, download=download)
         started = time.perf_counter()
         try:
             async with asyncio.timeout(30):
-                raw = await asyncio.get_running_loop().run_in_executor(_executor, to_run)
+                raw = await asyncio.get_running_loop().run_in_executor(
+                    _executor, to_run
+                )
             metrics.source_resolve_seconds.observe(time.perf_counter() - started)
-        except asyncio.TimeoutError:
-            logger.warning(f"[{ctx.guild}] create_source: yt-dlp timed out for '{search}'")
-            await ctx.send(embed=discord.Embed(
-                title="", description="Song took too long to load, please try again.", color=discord.Color.red()
-            ))
+        except TimeoutError:
+            logger.warning(
+                f"[{ctx.guild}] create_source: yt-dlp timed out for '{search}'"
+            )
+            await ctx.send(
+                embed=discord.Embed(
+                    title="",
+                    description="Song took too long to load, please try again.",
+                    color=discord.Color.red(),
+                )
+            )
             return None
 
         if raw is None:
             logger.warning(f"[{ctx.guild}] create_source: no results for '{search}'")
-            await ctx.send(embed=discord.Embed(title="", description="No results found.", color=discord.Color.red()))
+            await ctx.send(
+                embed=discord.Embed(
+                    title="", description="No results found.", color=discord.Color.red()
+                )
+            )
             return None
 
         data: dict[str, Any] = raw  # type: ignore[assignment]
-        if 'entries' in data:
-            data = data['entries'][0]
+        if "entries" in data:
+            data = data["entries"][0]
 
-        logger.debug(f"[{ctx.guild}] create_source: resolved '{search}' -> '{data.get('title')}' ({data.get('webpage_url')})")
+        logger.debug(
+            f"[{ctx.guild}] create_source: resolved '{search}' -> '{data.get('title')}' ({data.get('webpage_url')})"
+        )
 
         if download:
             source = ytdl.prepare_filename(data)  # type: ignore[arg-type]
             return cls(
                 discord.FFmpegPCMAudio(
                     source,
-                    before_options=FFMPEG_OPTIONS['before_options'],
-                    options=FFMPEG_OPTIONS['options'],
+                    before_options=FFMPEG_OPTIONS["before_options"],
+                    options=FFMPEG_OPTIONS["options"],
                 ),
                 data=data,
                 requester=ctx.author,
             )
 
         return {
-            'webpage_url': data['webpage_url'],
-            'requester': ctx.author,
-            'title': data['title'],
-            'thumbnail': data.get('thumbnail'),
-            'duration': data.get('duration'),
-            'is_live': bool(data.get('is_live')),
+            "webpage_url": data["webpage_url"],
+            "requester": ctx.author,
+            "title": data["title"],
+            "thumbnail": data.get("thumbnail"),
+            "duration": data.get("duration"),
+            "is_live": bool(data.get("is_live")),
         }
 
     @classmethod
     async def fetch_stream_info(cls, data: dict[str, Any]) -> dict[str, Any]:
         """Fetch a fresh stream URL from yt-dlp without spawning FFmpeg."""
-        logger.debug(f"fetch_stream_info: fetching stream for '{data.get('title')}' ({data.get('webpage_url')})")
-        to_run = partial(ytdl.extract_info, url=data['webpage_url'], download=False)
+        logger.debug(
+            f"fetch_stream_info: fetching stream for '{data.get('title')}' ({data.get('webpage_url')})"
+        )
+        to_run = partial(ytdl.extract_info, url=data["webpage_url"], download=False)
         started = time.perf_counter()
         async with asyncio.timeout(30):
             raw = await asyncio.get_running_loop().run_in_executor(_executor, to_run)
@@ -161,17 +180,19 @@ class MusicSource(discord.PCMVolumeTransformer):
         logger.debug(f"from_stream_info: spawning FFmpeg for '{info.get('title')}'")
         return cls(
             discord.FFmpegPCMAudio(
-                info['url'],
-                before_options=FFMPEG_OPTIONS['before_options'],
-                options=FFMPEG_OPTIONS['options'],
+                info["url"],
+                before_options=FFMPEG_OPTIONS["before_options"],
+                options=FFMPEG_OPTIONS["options"],
             ),
             data=info,
             requester=requester,
         )
 
     @classmethod
-    async def regather_stream(cls, data: dict[str, Any], *, requester=None) -> "MusicSource":
-        req = requester or data['requester']
+    async def regather_stream(
+        cls, data: dict[str, Any], *, requester=None
+    ) -> "MusicSource":
+        req = requester or data["requester"]
         info = await cls.fetch_stream_info(data)
         return cls.from_stream_info(info, req)
 
@@ -182,48 +203,65 @@ class MusicSource(discord.PCMVolumeTransformer):
 
         def _extract():
             raw = ytdl_flat.extract_info(url=url, download=False)
-            if raw is None or 'entries' not in raw:
+            if raw is None or "entries" not in raw:
                 return None
             # Force-consume any lazy iterator inside the executor thread so the
             # generator's network calls don't bleed back into the event loop.
             info: Any = raw
-            return {'title': info.get('title', url), 'entries': list(info['entries'])}
+            return {"title": info.get("title", url), "entries": list(info["entries"])}
 
         try:
             async with asyncio.timeout(60):
-                result = await asyncio.get_running_loop().run_in_executor(_executor, _extract)
-        except asyncio.TimeoutError:
-            logger.warning(f"[{ctx.guild}] fetch_playlist_entries: timed out for '{url}'")
-            await ctx.send(embed=discord.Embed(
-                description="Playlist took too long to load, please try again.", color=discord.Color.red()
-            ))
+                result = await asyncio.get_running_loop().run_in_executor(
+                    _executor, _extract
+                )
+        except TimeoutError:
+            logger.warning(
+                f"[{ctx.guild}] fetch_playlist_entries: timed out for '{url}'"
+            )
+            await ctx.send(
+                embed=discord.Embed(
+                    description="Playlist took too long to load, please try again.",
+                    color=discord.Color.red(),
+                )
+            )
             return []
 
         if not result:
-            logger.warning(f"[{ctx.guild}] fetch_playlist_entries: no entries found for '{url}'")
+            logger.warning(
+                f"[{ctx.guild}] fetch_playlist_entries: no entries found for '{url}'"
+            )
             return []
 
         entries = []
-        for entry in result['entries']:
+        for entry in result["entries"]:
             if not entry:
                 continue
-            video_id = entry.get('id')
+            video_id = entry.get("id")
             if not video_id:
                 # yt-dlp flat entries sometimes put just the bare ID in 'url'
-                raw_url = entry.get('url', '')
+                raw_url = entry.get("url", "")
                 parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
-                video_id = (parsed_qs.get('v') or [None])[0] or (raw_url if raw_url and '/' not in raw_url else None)
+                video_id = (parsed_qs.get("v") or [None])[0] or (
+                    raw_url if raw_url and "/" not in raw_url else None
+                )
             if not video_id:
-                logger.debug(f"[{ctx.guild}] fetch_playlist_entries: skipping entry with no resolvable ID: {entry}")
+                logger.debug(
+                    f"[{ctx.guild}] fetch_playlist_entries: skipping entry with no resolvable ID: {entry}"
+                )
                 continue
-            entries.append({
-                'webpage_url': f"https://www.youtube.com/watch?v={video_id}",
-                'requester': ctx.author,
-                'title': entry.get('title', 'Unknown'),
-                'thumbnail': f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg",
-                'duration': entry.get('duration'),
-                'is_live': bool(entry.get('is_live')),
-            })
+            entries.append(
+                {
+                    "webpage_url": f"https://www.youtube.com/watch?v={video_id}",
+                    "requester": ctx.author,
+                    "title": entry.get("title", "Unknown"),
+                    "thumbnail": f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg",
+                    "duration": entry.get("duration"),
+                    "is_live": bool(entry.get("is_live")),
+                }
+            )
 
-        logger.debug(f"[{ctx.guild}] fetch_playlist_entries: found {len(entries)} tracks in '{result['title']}'")
+        logger.debug(
+            f"[{ctx.guild}] fetch_playlist_entries: found {len(entries)} tracks in '{result['title']}'"
+        )
         return entries

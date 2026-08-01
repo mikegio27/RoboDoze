@@ -14,7 +14,11 @@ logger.setLevel(LOG_LEVEL)
 class _JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict = {
-            "timestamp": datetime.datetime.utcfromtimestamp(record.created).isoformat() + "Z",
+            "timestamp": datetime.datetime.fromtimestamp(
+                record.created, tz=datetime.UTC
+            )
+            .isoformat()
+            .replace("+00:00", "Z"),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -32,5 +36,7 @@ if not logger.hasHandlers():
     if LOG_FORMAT == "json":
         _handler.setFormatter(_JsonFormatter())
     else:
-        _handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] %(name)s: %(message)s"))
+        _handler.setFormatter(
+            logging.Formatter("[%(asctime)s] [%(levelname)s] %(name)s: %(message)s")
+        )
     logger.addHandler(_handler)

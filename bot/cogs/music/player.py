@@ -7,7 +7,18 @@ import discord
 
 from utils import metrics
 from utils.logging import logger
+
 from .source import ALONE_TIMEOUT, MAX_QUEUE_SIZE, MusicSource, format_duration
+
+# Loop modes. Mutually exclusive by construction — a single field avoids the
+# nonsensical "track loop and queue loop both on" state two booleans would allow.
+LOOP_OFF = "off"
+LOOP_TRACK = "track"
+LOOP_QUEUE = "queue"
+LOOP_LABELS = {
+    LOOP_TRACK: "🔁 Looping current track",
+    LOOP_QUEUE: "🔁 Looping queue",
+}
 
 
 class MusicQueue(asyncio.Queue):
@@ -43,16 +54,79 @@ class MusicQueue(asyncio.Queue):
         self._data.extend(items)
 
     def insert_front(self, item: Any) -> None:
-        """Insert item at the front of the queue so it plays next."""
+        """Insert item at the front of the queue so it plays next.
+
+        Only safe to call from the player-loop tail, where no consumer is parked
+        in get() — this bypasses put_nowait and so never wakes a waiting getter.
+        """
         self._data.appendleft(item)
+
+    def append_back(self, item: Any) -> None:
+        """Append item to the back of the queue, bypassing maxsize.
+
+        Used by queue-loop to re-register a finished track. Deliberately not
+        put_nowait: the dequeue and this re-append are separated by a whole
+        track, so the queue can legitimately be full again by now, and dropping
+        the track would silently shrink the rotation. Overflow is bounded at
+        maxsize + 1 since exactly one item is appended per completion and each
+        completion is preceded by a dequeue.
+
+        Same caller constraint as insert_front: player-loop tail only.
+        """
+        self._data.append(item)
+
+
+def requeue_finished(
+    queue: MusicQueue,
+    current_raw: dict[str, Any] | None,
+    mode: str,
+    log_prefix: str = "",
+) -> bool:
+    """Re-register a track that just finished, according to the loop mode.
+
+    Only the raw metadata dict is ever re-queued — the MusicSource has already
+    been cleaned up and its ffmpeg process is dead. The dict holds no expiring
+    stream URL, so it re-resolves cleanly on the next play.
+
+    Track loop puts it back at the front (plays again immediately); queue loop
+    sends it to the back (the rotation cycles). Returns True if re-queued.
+    """
+    if not current_raw:
+        return False
+    if mode == LOOP_TRACK:
+        queue.insert_front(current_raw)
+        logger.debug(
+            f"{log_prefix}player_loop: track loop — re-queued "
+            f"'{current_raw.get('title')}' at front"
+        )
+        return True
+    if mode == LOOP_QUEUE:
+        queue.append_back(current_raw)
+        logger.debug(
+            f"{log_prefix}player_loop: queue loop — re-queued "
+            f"'{current_raw.get('title')}' at back (size={queue.qsize()})"
+        )
+        return True
+    return False
 
 
 class MusicPlayer:
     __slots__ = (
-        'bot', '_guild', '_channel', '_cog',
-        'queue', 'next', 'current', 'np', 'volume',
-        '_event_loop', '_prefetch_task', '_prefetched',
-        '_loop', '_current_raw', '_alone_task',
+        "_alone_task",
+        "_channel",
+        "_cog",
+        "_current_raw",
+        "_event_loop",
+        "_guild",
+        "_loop_mode",
+        "_prefetch_task",
+        "_prefetched",
+        "bot",
+        "current",
+        "next",
+        "np",
+        "queue",
+        "volume",
     )
 
     def __init__(self, ctx):
@@ -70,7 +144,7 @@ class MusicPlayer:
         self.current = None
         self._prefetch_task = None
         self._prefetched = None
-        self._loop = False
+        self._loop_mode = LOOP_OFF
         self._current_raw = None
         self._alone_task = None
 
@@ -83,7 +157,9 @@ class MusicPlayer:
             logger.error(f"[{self._guild}] _after_play: playback error — {error!r}")
         else:
             title = self.current.title if self.current else "<unknown>"
-            logger.debug(f"[{self._guild}] _after_play: '{title}' finished cleanly, signalling next")
+            logger.debug(
+                f"[{self._guild}] _after_play: '{title}' finished cleanly, signalling next"
+            )
         self._event_loop.call_soon_threadsafe(self.next.set)
 
     def _cancel_prefetch(self) -> None:
@@ -93,20 +169,60 @@ class MusicPlayer:
         self._prefetch_task = None
         self._prefetched = None
 
+    def _ensure_alone_timer(self) -> None:
+        """Reconcile the auto-leave timer against reality, once per track.
+
+        on_voice_state_update alone is not enough: it never fires a member event
+        when an admin moves the bot into an empty channel, or when the bot joins
+        an already-empty one. Under queue-loop the queue never empties, so the
+        300s idle timeout in player_loop can never fire either — without this
+        reconciliation the bot could stream to nobody indefinitely.
+
+        Uses channel.voice_states (raw user_id -> VoiceState) rather than
+        channel.members: the bot runs without the privileged members intent, so
+        .members silently drops uncached users and could make a full channel
+        look empty.
+        """
+        vc = self._guild.voice_client
+        if not vc or not vc.channel:
+            return
+
+        listeners = [uid for uid in vc.channel.voice_states if uid != self.bot.user.id]
+        # Bind to a local so the None-check narrows the type for the .cancel()
+        # below; going through an intermediate bool would defeat that.
+        task = self._alone_task
+
+        if listeners:
+            if task is not None and not task.done():
+                logger.debug(
+                    f"[{self._guild}] _ensure_alone_timer: listeners present — cancelling auto-leave countdown"
+                )
+                task.cancel()
+                self._alone_task = None
+        elif task is None or task.done():
+            logger.info(
+                f"[{self._guild}] Alone in '{vc.channel}' (reconcile) — starting {ALONE_TIMEOUT}s auto-leave countdown"
+            )
+            self._alone_task = asyncio.ensure_future(self._alone_leave())
+
     async def _alone_leave(self) -> None:
         """Disconnect after ALONE_TIMEOUT seconds if the bot is still alone in voice."""
         await asyncio.sleep(ALONE_TIMEOUT)
         vc = self._guild.voice_client
         channel_name = vc.channel.name if vc else "voice"
-        logger.info(f"[{self._guild}] Auto-leave: alone in '{channel_name}' for {ALONE_TIMEOUT}s — disconnecting")
+        logger.info(
+            f"[{self._guild}] Auto-leave: alone in '{channel_name}' for {ALONE_TIMEOUT}s — disconnecting"
+        )
         try:
-            await self._channel.send(f"No one's listening — leaving **{channel_name}**. 👋")
+            await self._channel.send(
+                f"No one's listening — leaving **{channel_name}**. 👋"
+            )
         except discord.HTTPException:
             pass
         self.destroy(self._guild)
 
     async def _prefetch_next(self, data: dict[str, Any]) -> None:
-        title = data.get('title', '<unknown>')
+        title = data.get("title", "<unknown>")
         logger.debug(f"[{self._guild}] _prefetch_next: starting prefetch for '{title}'")
         try:
             info = await MusicSource.fetch_stream_info(data)
@@ -115,23 +231,33 @@ class MusicPlayer:
         except asyncio.CancelledError:
             logger.debug(f"[{self._guild}] _prefetch_next: cancelled for '{title}'")
             raise
-        except Exception as e:
-            logger.warning(f"[{self._guild}] _prefetch_next: failed for '{title}' — {e!r}")
+        # Prefetch is a pure optimisation — any failure must degrade to a cold
+        # regather at play time rather than propagate.
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[{self._guild}] _prefetch_next: failed for '{title}' — {e!r}"
+            )
             self._prefetched = None
         finally:
             self._prefetch_task = None
 
     async def _regather_with_retry(self, data: dict):
-        title = data.get('title', '<unknown>')
-        logger.debug(f"[{self._guild}] _regather_with_retry: fetching stream for '{title}'")
+        title = data.get("title", "<unknown>")
+        logger.debug(
+            f"[{self._guild}] _regather_with_retry: fetching stream for '{title}'"
+        )
         try:
             source = await MusicSource.regather_stream(data)
             logger.debug(f"[{self._guild}] _regather_with_retry: success for '{title}'")
             return source
-        except Exception as e:
+        # yt-dlp surfaces a wide, unstable set of exception types; any of them
+        # must degrade to "skip this track", never kill the player loop.
+        except Exception as e:  # noqa: BLE001
             metrics.stream_errors_total.labels(stage="resolve").inc()
-            logger.error(f"[{self._guild}] _regather_with_retry: failed for '{title}' — {e!r}")
-            await self._channel.send(f'There was an error processing your song: {e}')
+            logger.error(
+                f"[{self._guild}] _regather_with_retry: failed for '{title}' — {e!r}"
+            )
+            await self._channel.send(f"There was an error processing your song: {e}")
             return None
 
     async def player_loop(self) -> None:
@@ -143,14 +269,22 @@ class MusicPlayer:
             self.next.clear()
 
             try:
-                logger.debug(f"[{self._guild}] player_loop: waiting for next track (timeout=300s, queue_size={self.queue.qsize()})")
+                logger.debug(
+                    f"[{self._guild}] player_loop: waiting for next track (timeout=300s, queue_size={self.queue.qsize()})"
+                )
                 async with asyncio.timeout(300):
                     source = await self.queue.get()
-                logger.debug(f"[{self._guild}] player_loop: dequeued item type={type(source).__name__}")
-            except asyncio.TimeoutError:
-                logger.info(f"[{self._guild}] player_loop: queue idle for 300s — destroying player")
+                logger.debug(
+                    f"[{self._guild}] player_loop: dequeued item type={type(source).__name__}"
+                )
+            except TimeoutError:
+                logger.info(
+                    f"[{self._guild}] player_loop: queue idle for 300s — destroying player"
+                )
                 try:
-                    await self._channel.send("Queue finished and idle too long — leaving voice. 👋")
+                    await self._channel.send(
+                        "Queue finished and idle too long — leaving voice. 👋"
+                    )
                 except discord.HTTPException:
                     pass
                 self.destroy(self._guild)
@@ -160,8 +294,12 @@ class MusicPlayer:
                 if not isinstance(source, MusicSource):
                     queued = source
                     self._current_raw = queued
-                    queued_url = queued.get('webpage_url')
-                    prefetched_url = self._prefetched.get('webpage_url') if self._prefetched else None
+                    queued_url = queued.get("webpage_url")
+                    prefetched_url = (
+                        self._prefetched.get("webpage_url")
+                        if self._prefetched
+                        else None
+                    )
                     logger.debug(
                         f"[{self._guild}] player_loop: resolving stream for '{queued.get('title')}' "
                         f"prefetch_ready={self._prefetched is not None} "
@@ -173,33 +311,53 @@ class MusicPlayer:
                         info = self._prefetched
                         self._prefetched = None
                         self._prefetch_task = None
-                        source = MusicSource.from_stream_info(info, queued['requester'])
-                        logger.debug(f"[{self._guild}] player_loop: prefetch hit — FFmpeg spawned immediately")
+                        source = MusicSource.from_stream_info(info, queued["requester"])
+                        logger.debug(
+                            f"[{self._guild}] player_loop: prefetch hit — FFmpeg spawned immediately"
+                        )
                     elif self._prefetch_task and not self._prefetch_task.done():
-                        logger.debug(f"[{self._guild}] player_loop: prefetch task in-flight, awaiting (timeout=30s)")
+                        logger.debug(
+                            f"[{self._guild}] player_loop: prefetch task in-flight, awaiting (timeout=30s)"
+                        )
                         try:
                             async with asyncio.timeout(30):
                                 await self._prefetch_task
-                            if self._prefetched and self._prefetched.get('webpage_url') == queued_url:
+                            if (
+                                self._prefetched
+                                and self._prefetched.get("webpage_url") == queued_url
+                            ):
                                 info = self._prefetched
                                 self._prefetched = None
                                 self._prefetch_task = None
-                                source = MusicSource.from_stream_info(info, queued['requester'])
-                                logger.debug(f"[{self._guild}] player_loop: prefetch hit (awaited)")
+                                source = MusicSource.from_stream_info(
+                                    info, queued["requester"]
+                                )
+                                logger.debug(
+                                    f"[{self._guild}] player_loop: prefetch hit (awaited)"
+                                )
                             else:
-                                logger.debug(f"[{self._guild}] player_loop: prefetch URL mismatch after await — regathering")
+                                logger.debug(
+                                    f"[{self._guild}] player_loop: prefetch URL mismatch after await — regathering"
+                                )
                                 self._cancel_prefetch()
                                 source = await self._regather_with_retry(queued)
-                        except (asyncio.TimeoutError, asyncio.CancelledError) as e:
-                            logger.warning(f"[{self._guild}] player_loop: prefetch await failed ({type(e).__name__}) — regathering")
+                        except (TimeoutError, asyncio.CancelledError) as e:
+                            logger.warning(
+                                f"[{self._guild}] player_loop: prefetch await failed ({type(e).__name__}) — regathering"
+                            )
                             self._cancel_prefetch()
                             source = await self._regather_with_retry(queued)
                     else:
-                        logger.debug(f"[{self._guild}] player_loop: no prefetch available — regathering")
+                        logger.debug(
+                            f"[{self._guild}] player_loop: no prefetch available — regathering"
+                        )
                         source = await self._regather_with_retry(queued)
 
                 if source is None:
-                    logger.warning(f"[{self._guild}] player_loop: source is None after resolution — skipping track")
+                    logger.warning(
+                        f"[{self._guild}] player_loop: source is None after resolution — "
+                        f"skipping track (dropped from loop rotation if looping)"
+                    )
                     self._current_raw = None
                     continue
 
@@ -216,10 +374,14 @@ class MusicPlayer:
                     return
 
                 if vc.is_playing():
-                    logger.warning(f"[{self._guild}] player_loop: voice client already playing when starting '{source.title}' — stopping first")
+                    logger.warning(
+                        f"[{self._guild}] player_loop: voice client already playing when starting '{source.title}' — stopping first"
+                    )
                     vc.stop()
 
-                duration_str = "LIVE" if source.is_live else format_duration(source.duration)
+                duration_str = (
+                    "LIVE" if source.is_live else format_duration(source.duration)
+                )
                 logger.info(
                     f"[{self._guild}] Now playing '{source.title}' | "
                     f"requested by {source.requester} ({source.requester.id}) | "
@@ -227,6 +389,7 @@ class MusicPlayer:
                 )
                 vc.play(source, after=self._after_play)
                 metrics.streams_started_total.inc()
+                self._ensure_alone_timer()
 
                 embed = discord.Embed(
                     title="Now playing",
@@ -235,12 +398,14 @@ class MusicPlayer:
                 )
                 if source.thumbnail:
                     embed.set_thumbnail(url=source.thumbnail)
-                if self._loop:
-                    embed.set_footer(text="🔁 Loop enabled")
+                if self._loop_mode != LOOP_OFF:
+                    embed.set_footer(text=LOOP_LABELS[self._loop_mode])
                 try:
                     self.np = await self._channel.send(embed=embed)
                 except discord.Forbidden:
-                    logger.warning(f"[{self._guild}] player_loop: missing Embed Links — falling back to plain text now-playing")
+                    logger.warning(
+                        f"[{self._guild}] player_loop: missing Embed Links — falling back to plain text now-playing"
+                    )
                     try:
                         self.np = await self._channel.send(
                             f"**Now Playing:** {source.title} | `{duration_str}` | {source.requester.mention}\n"
@@ -249,31 +414,48 @@ class MusicPlayer:
                     except discord.HTTPException:
                         pass
                 except discord.HTTPException as e:
-                    logger.error(f"[{self._guild}] player_loop: failed to send now-playing message — {e!r}")
+                    logger.error(
+                        f"[{self._guild}] player_loop: failed to send now-playing message — {e!r}"
+                    )
 
                 snapshot = self.queue.snapshot()
                 if snapshot and isinstance(snapshot[0], dict):
-                    self._prefetch_task = asyncio.ensure_future(self._prefetch_next(snapshot[0]))
-                    logger.debug(f"[{self._guild}] player_loop: prefetch started for next track '{snapshot[0].get('title')}'")
+                    self._prefetch_task = asyncio.ensure_future(
+                        self._prefetch_next(snapshot[0])
+                    )
+                    logger.debug(
+                        f"[{self._guild}] player_loop: prefetch started for next track '{snapshot[0].get('title')}'"
+                    )
                 else:
-                    logger.debug(f"[{self._guild}] player_loop: queue has {len(snapshot)} item(s), no prefetch needed")
+                    logger.debug(
+                        f"[{self._guild}] player_loop: queue has {len(snapshot)} item(s), no prefetch needed"
+                    )
 
-                logger.debug(f"[{self._guild}] player_loop: waiting for track to finish")
+                logger.debug(
+                    f"[{self._guild}] player_loop: waiting for track to finish"
+                )
                 await self.next.wait()
-                logger.debug(f"[{self._guild}] player_loop: track ended or skipped, cleaning up source")
+                logger.debug(
+                    f"[{self._guild}] player_loop: track ended or skipped, cleaning up source"
+                )
                 source.cleanup()
                 self.current = None
 
-                if self._loop and self._current_raw:
-                    self.queue.insert_front(self._current_raw)
-                    logger.debug(f"[{self._guild}] player_loop: loop mode — re-queued '{self._current_raw.get('title')}' at front")
-                else:
-                    self._current_raw = None
+                requeue_finished(
+                    self.queue, self._current_raw, self._loop_mode, f"[{self._guild}] "
+                )
+                self._current_raw = None
 
-                logger.debug(f"[{self._guild}] player_loop: source cleanup complete, looping")
+                logger.debug(
+                    f"[{self._guild}] player_loop: source cleanup complete, looping"
+                )
 
-            except Exception as e:
-                logger.exception(f"[{self._guild}] player_loop: unhandled exception in loop body — {e!r}")
+            # Last line of defence: the player loop must survive anything, or
+            # music dies for this guild until the bot restarts.
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    f"[{self._guild}] player_loop: unhandled exception in loop body — {e!r}"
+                )
                 self.current = None
                 self._current_raw = None
                 await asyncio.sleep(1)
@@ -281,7 +463,9 @@ class MusicPlayer:
         logger.info(f"[{self._guild}] player_loop: bot closed, exiting loop")
 
     def destroy(self, guild) -> asyncio.Task:
-        logger.info(f"[{guild}] destroy() called — cancelling prefetch and scheduling cleanup")
+        logger.info(
+            f"[{guild}] destroy() called — cancelling prefetch and scheduling cleanup"
+        )
         self._cancel_prefetch()
         if self._alone_task and not self._alone_task.done():
             self._alone_task.cancel()

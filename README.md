@@ -25,13 +25,19 @@ Default prefix: `!dozy` (configurable via `COMMAND_PREFIX`)
 | `skip` | | Skip the current track |
 | `pause` | | Pause playback |
 | `resume` | | Resume playback |
-| `loop` | `lp`, `repeat` | Toggle loop for the current track |
+| `loop` | `lp`, `repeat` | Toggle repeat for the **current track** |
+| `loopqueue` | `lq`, `loopall`, `repeatqueue` | Toggle repeat for the **whole queue** — finished tracks return to the end |
 | `shuffle` | `sh` | Shuffle the upcoming queue |
 | `queue` | `q`, `que` | Show the current queue |
 | `np` | `song`, `current`, `playing` | Show what's playing now |
 | `volume [1-100]` | `v`, `vol` | Get or set volume |
 | `remove [pos]` | `rm`, `rem` | Remove a track (defaults to last) |
 | `clear` | `clr`, `cl`, `cr` | Clear the entire queue |
+
+`loop` and `loopqueue` are mutually exclusive — enabling one turns the other off.
+While `loopqueue` is on, the queue never drains: `remove` can only drop upcoming
+tracks, since the playing track returns to the end of the rotation. Use `clear` to
+empty the rotation, or `loopqueue` again to turn it off.
 
 ## Configuration
 
@@ -72,6 +78,24 @@ The bot exposes two HTTP endpoints on port 8080 (configurable):
 
 - `GET /healthz` — 200 while the process is alive
 - `GET /readyz` — 200 after Discord `on_ready` fires; 503 before then
+
+## Development
+
+Lint and format (config in `pyproject.toml`):
+
+```bash
+ruff check .
+ruff format .
+```
+
+Run the tests — stdlib `unittest`, no extra dependencies:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+They cover the queue and loop-mode re-queueing logic, which is pure and needs no
+Discord connection. Playback itself is not covered — verify that against a live bot.
 
 ## Requirements
 

@@ -6,15 +6,22 @@ import time
 
 import discord
 from discord.ext import commands
+
+from health import start_health_server
 from utils import metrics
 from utils.logging import logger
-from health import start_health_server
 
-token = os.getenv("DISCORD_TOKEN")
-if not token:
-    sys.exit("DISCORD_TOKEN environment variable is not set.")
 
-EXTENSIONS = ['cogs.music', 'cogs.ai']
+def _require_token() -> str:
+    value = os.getenv("DISCORD_TOKEN")
+    if not value:
+        sys.exit("DISCORD_TOKEN environment variable is not set.")
+    return value
+
+
+token = _require_token()
+
+EXTENSIONS = ["cogs.music"]
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -38,10 +45,13 @@ class RoboDoze(commands.Bot):
         )
 
     async def on_ready(self) -> None:
-        logger.info(f"Logged in as {self.user.name} ({self.user.id})")
+        user = self.user
+        if user:
+            logger.info(f"Logged in as {user.name} ({user.id})")
 
     async def _metrics_before_invoke(self, ctx: commands.Context) -> None:
-        ctx._metrics_start = time.perf_counter()
+        # Stashed on the Context for on_command_completion to read back.
+        ctx._metrics_start = time.perf_counter()  # pyright: ignore[reportAttributeAccessIssue]
 
     async def on_command_completion(self, ctx: commands.Context) -> None:
         name = ctx.command.qualified_name if ctx.command else "unknown"
@@ -60,13 +70,15 @@ class RoboDoze(commands.Bot):
         for vc in list(self.voice_clients):
             try:
                 await vc.disconnect(force=True)
-            except Exception:
-                pass
+            # Best-effort shutdown: a failed disconnect must not block the rest of close().
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"close: voice client disconnect failed — {e!r}")
         if self._health_runner:
             try:
                 await self._health_runner.cleanup()
-            except Exception:
-                pass
+            # Best-effort shutdown: a failed cleanup must not block super().close().
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"close: health server cleanup failed — {e!r}")
         await super().close()
 
 
@@ -78,5 +90,5 @@ async def main() -> None:
         await bot.start(token)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())
