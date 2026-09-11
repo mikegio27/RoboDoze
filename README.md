@@ -5,7 +5,7 @@ A self-hosted Discord music bot. Streams audio from YouTube (and anything yt-dlp
 ## Features
 
 - Stream audio from YouTube and other yt-dlp-supported sources
-- Queue management with a 50-song cap
+- Queue management with a 500-song cap
 - Loop and shuffle modes
 - Next-track prefetching to minimize gaps between songs
 - Auto-leave when the voice channel is empty (60s timeout)

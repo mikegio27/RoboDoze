@@ -14,7 +14,7 @@ from utils.logging import logger
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdl")
 
-MAX_QUEUE_SIZE = 50
+MAX_QUEUE_SIZE = 500
 ALONE_TIMEOUT = 60  # seconds before auto-leaving an empty voice channel
 
 FFMPEG_OPTIONS = {
