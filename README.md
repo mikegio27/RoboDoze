@@ -14,7 +14,7 @@ A self-hosted Discord music bot. Streams audio from YouTube (and anything yt-dlp
 
 ## Commands
 
-Default prefix: `!dozy` (configurable via `COMMAND_PREFIX`)
+Default prefix: `!dozy` (configurable via `COMMAND_PREFIX`; the production deployment uses `rd-`, e.g. `rd-play`)
 
 | Command | Aliases | Description |
 |---|---|---|
@@ -47,7 +47,9 @@ Set via environment variables (or a `.env` file when using Docker Compose):
 |---|---|---|---|
 | `DISCORD_TOKEN` | Yes | — | Discord bot token |
 | `COMMAND_PREFIX` | No | `!dozy` | Bot command prefix |
-| `HEALTH_PORT` | No | `8080` | Port for the health server |
+| `HEALTH_PORT` | No | `8080` | Port for the health server (`/healthz`, `/readyz`, `/metrics`) |
+| `LOG_LEVEL` | No | `INFO` | Python log level (`DEBUG`, `INFO`, `WARNING`, ...). `DEBUG` is very verbose |
+| `LOG_FORMAT` | No | `text` | `text` for human-readable lines, `json` for one JSON object per line (used in prod for Loki) |
 
 ## Docker image
 
@@ -70,7 +72,9 @@ docker compose up --build
 
 ## Deployment
 
-See [DEPLOY.md](DEPLOY.md) for full instructions covering Docker Compose, minikube, k3s, and pulling from GHCR.
+Production runs on a homelab k3s cluster via Flux; the manifests live in the separate homelab
+repo (`apps/discord/`), and a deploy is a pinned image-tag bump there. See [DEPLOY.md](DEPLOY.md)
+for Docker Compose, GHCR tags, the production deploy flow, and the metrics reference.
 
 ## Health endpoints
 
@@ -94,8 +98,9 @@ Run the tests — stdlib `unittest`, no extra dependencies:
 python3 -m unittest discover -s tests -v
 ```
 
-They cover the queue and loop-mode re-queueing logic, which is pure and needs no
-Discord connection. Playback itself is not covered — verify that against a live bot.
+They cover the queue and loop-mode re-queueing logic and the "alone in voice"
+auto-leave check, none of which need a Discord connection. CI runs ruff and the
+tests on every push and only builds the image if they pass. Playback itself is not covered — verify that against a live bot.
 
 ## Requirements
 

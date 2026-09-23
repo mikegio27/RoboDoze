@@ -63,105 +63,48 @@ Pre-built images are published to GitHub Container Registry on every merge to `m
 docker pull ghcr.io/mikegio27/robodoze:latest
 ```
 
-Use this image in place of the locally-built `robodoze:local` wherever it appears below. For Kubernetes, update the `image:` field in `k8s/deployment.yaml` to the GHCR reference and set `imagePullPolicy: Always`.
+Pin a short-sha tag for anything long-lived; `latest` and `main` move on every push.
+
+CI (`.github/workflows/docker.yml`) runs `ruff check`, `ruff format --check` and the unit
+tests first. The image is only built and pushed if they pass.
 
 ---
 
-## Prerequisites (Kubernetes)
+## Production (homelab k3s, Flux GitOps)
 
-- Docker
-- `kubectl` configured for your local cluster (minikube or k3s)
-- A Discord bot token
+The production manifests are not in this repo. They live in the homelab repo at
+[`../homelab/apps/discord/`](../homelab/apps/discord/) (namespace `discord`) and are
+reconciled by Flux:
 
----
+| File | Contents |
+|---|---|
+| `deployment.yaml` | the pinned `image:`, `replicas: 1`, `strategy: Recreate`, probes, `prometheus.io/*` annotations |
+| `configmap.yaml` | `COMMAND_PREFIX` (`rd-`), `LOG_LEVEL`, `LOG_FORMAT` (`json`) |
+| `namespace.yaml`, `kustomization.yaml` | namespace and kustomize wiring |
 
-## minikube
+`DISCORD_TOKEN` comes from the Secret `robodoze-secret`, which is created out of band and
+never committed.
 
-### 1. Build the image inside minikube's Docker daemon
+### Shipping a new build
 
-```bash
-eval $(minikube docker-env)
-docker build -t robodoze:local .
-```
+1. Push to `main` here and wait for the Actions run to go green.
+2. In `../homelab/apps/discord/deployment.yaml`, set
+   `image: ghcr.io/mikegio27/robodoze:<short-sha>` (the 7-char sha of the built commit).
+   Always pin the sha, never `latest`: the pull policy is `IfNotPresent`.
+3. Commit and push homelab `main`. Flux applies it, and the `Recreate` strategy stops the old
+   pod before starting the new one, so there is a short outage but never two bots answering
+   at once.
 
-### 2. Set your Discord token
+The `homelab-ship` Claude Code skill automates steps 1–3 (it finds the latest green build,
+bumps the tag, validates the render and commits, asking before it pushes).
 
-Edit `k8s/secret.yaml` — replace the placeholder with your real base64-encoded token:
-
-```bash
-echo -n "your_actual_token_here" | base64
-# Paste the output as the value of DISCORD_TOKEN in k8s/secret.yaml
-```
-
-> **Never commit this file after editing.** Consider keeping the real secret out of source control entirely and applying it imperatively:
-> ```bash
-> kubectl create secret generic robodoze-secret \
->   --from-literal=DISCORD_TOKEN=your_actual_token_here
-> ```
-
-### 3. Deploy
+### Verify
 
 ```bash
-kubectl apply -k k8s/
-```
-
-### 4. Verify
-
-```bash
-kubectl rollout status deployment/robodoze
-kubectl logs -f deployment/robodoze
-```
-
-### 5. Health check
-
-```bash
-kubectl port-forward deployment/robodoze 8080:8080 &
-curl http://localhost:8080/healthz   # always 200 while process is alive
-curl http://localhost:8080/readyz    # 200 after Discord on_ready fires
-```
-
----
-
-## k3s
-
-### 1. Import the image
-
-```bash
-docker build -t robodoze:local .
-docker save robodoze:local | sudo k3s ctr images import -
-```
-
-Or if using k3d with a local registry:
-
-```bash
-k3d registry create myregistry.localhost --port 5000
-docker build -t localhost:5000/robodoze:local .
-docker push localhost:5000/robodoze:local
-# Update image in k8s/deployment.yaml to localhost:5000/robodoze:local
-# and set imagePullPolicy: Always
-```
-
-### 2–5. Same as minikube steps above.
-
----
-
-## Update flow
-
-Rebuild the image and restart the deployment. The `Recreate` strategy stops the old pod before starting the new one:
-
-```bash
-# (minikube) rebuild inside the daemon
-eval $(minikube docker-env)
-docker build -t robodoze:local .
-
-kubectl rollout restart deployment/robodoze
-kubectl rollout status deployment/robodoze
-```
-
-## Tear down
-
-```bash
-kubectl delete -k k8s/
+kubectl -n discord rollout status deploy/robodoze
+kubectl -n discord logs -f deploy/robodoze     # JSON lines (LOG_FORMAT=json)
+kubectl -n discord port-forward deploy/robodoze 8080:8080 &
+curl http://localhost:8080/readyz
 ```
 
 ---
@@ -169,8 +112,9 @@ kubectl delete -k k8s/
 ## Observability (LGTM stack)
 
 The bot exposes Prometheus metrics on the same port as the health server at
-`GET /metrics` (default `:8080`). Point Prometheus/Mimir at it via pod
-annotations:
+`GET /metrics` (default `:8080`). In the homelab, Alloy scrapes it via these pod
+annotations (already set in `deployment.yaml`), and the Grafana dashboard lives at
+`../homelab/apps/grafana/dashboards/robodoze-dashboard.json`:
 
 ```yaml
 metadata:
@@ -179,9 +123,6 @@ metadata:
     prometheus.io/port: "8080"
     prometheus.io/path: "/metrics"
 ```
-
-…or, with the Prometheus Operator, a `ServiceMonitor` selecting the bot's
-Service on the `8080` port and `/metrics` path.
 
 ### Metrics emitted
 
