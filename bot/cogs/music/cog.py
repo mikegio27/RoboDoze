@@ -7,7 +7,14 @@ from discord.ext import commands
 from utils import metrics
 from utils.logging import logger
 
-from .player import LOOP_LABELS, LOOP_OFF, LOOP_QUEUE, LOOP_TRACK, MusicPlayer
+from .player import (
+    LOOP_LABELS,
+    LOOP_OFF,
+    LOOP_QUEUE,
+    LOOP_TRACK,
+    MusicPlayer,
+    has_listeners,
+)
 from .source import (
     ALONE_TIMEOUT,
     MAX_QUEUE_SIZE,
@@ -92,15 +99,16 @@ class Music(commands.Cog):
             return
 
         # Member left the bot's voice channel — check if bot is now alone
-        if before.channel and before.channel.id == vc.channel.id:
-            non_bots = [m for m in vc.channel.members if not m.bot]
-            if not non_bots and not (
-                player._alone_task and not player._alone_task.done()
-            ):
-                logger.info(
-                    f"[{guild}] Bot is alone in '{vc.channel}' — starting {ALONE_TIMEOUT}s auto-leave countdown"
-                )
-                player._alone_task = asyncio.ensure_future(player._alone_leave())
+        if (
+            before.channel
+            and before.channel.id == vc.channel.id
+            and not has_listeners(vc.channel, self.bot.user.id)
+            and not (player._alone_task and not player._alone_task.done())
+        ):
+            logger.info(
+                f"[{guild}] Bot is alone in '{vc.channel}' — starting {ALONE_TIMEOUT}s auto-leave countdown"
+            )
+            player._alone_task = asyncio.ensure_future(player._alone_leave())
 
         # Member joined the bot's voice channel — cancel any pending auto-leave
         if (

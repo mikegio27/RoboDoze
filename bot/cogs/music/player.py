@@ -21,6 +21,30 @@ LOOP_LABELS = {
 }
 
 
+def has_listeners(channel, self_id: int) -> bool:
+    """True if anyone other than this bot (and other bots) is in ``channel``.
+
+    The single source of truth for "is the bot alone?", shared by
+    MusicPlayer._ensure_alone_timer and Music.on_voice_state_update so the two
+    can never disagree (a disagreement makes one start the countdown and the
+    other cancel it).
+
+    Iterates channel.voice_states (raw user_id -> VoiceState), which is always
+    complete with the voice_states intent, rather than channel.members, which
+    is filtered through the member cache and silently drops uncached users.
+    A user is only excluded as a bot when the cache positively says so; an
+    uncached user counts as a listener, erring towards staying connected.
+    """
+    for uid in channel.voice_states:
+        if uid == self_id:
+            continue
+        member = channel.guild.get_member(uid)
+        if member is not None and member.bot:
+            continue
+        return True
+    return False
+
+
 class MusicQueue(asyncio.Queue):
     """asyncio.Queue with safe public methods for inspection and modification."""
 
@@ -178,16 +202,13 @@ class MusicPlayer:
         300s idle timeout in player_loop can never fire either — without this
         reconciliation the bot could stream to nobody indefinitely.
 
-        Uses channel.voice_states (raw user_id -> VoiceState) rather than
-        channel.members: the bot runs without the privileged members intent, so
-        .members silently drops uncached users and could make a full channel
-        look empty.
+        The "alone" test itself lives in has_listeners(), shared with the cog.
         """
         vc = self._guild.voice_client
         if not vc or not vc.channel:
             return
 
-        listeners = [uid for uid in vc.channel.voice_states if uid != self.bot.user.id]
+        listeners = has_listeners(vc.channel, self.bot.user.id)
         # Bind to a local so the None-check narrows the type for the .cancel()
         # below; going through an intermediate bool would defeat that.
         task = self._alone_task
