@@ -79,7 +79,8 @@ reconciled by Flux:
 | File | Contents |
 |---|---|
 | `deployment.yaml` | the pinned `image:`, `replicas: 1`, `strategy: Recreate`, probes, `prometheus.io/*` annotations |
-| `configmap.yaml` | `COMMAND_PREFIX` (`rd-`), `LOG_LEVEL`, `LOG_FORMAT` (`json`) |
+| `configmap.yaml` | `COMMAND_PREFIX` (`rd-`), `LOG_LEVEL`, `LOG_FORMAT` (`json`), `DOZAI_URL`, `DOZAI_MODEL` |
+| `dozai-sealed-secret.yaml` | `DOZAI_TOKEN`: the dozai service client `robodoze` (interactive), sealed |
 | `namespace.yaml`, `kustomization.yaml` | namespace and kustomize wiring |
 
 `DISCORD_TOKEN` comes from the Secret `robodoze-secret`, which is created out of band and
@@ -139,5 +140,7 @@ metadata:
 | `robodoze_audio_bytes_streamed_total` | counter | — | PCM bytes streamed to Discord |
 | `robodoze_stream_errors_total` | counter | `stage` (resolve/playback) | Stream failures |
 | `robodoze_source_resolve_seconds` | histogram | — | yt-dlp resolution time |
+| `robodoze_asks_total` | counter | `status` (ok/error) | `ask` questions answered |
+| `robodoze_ask_duration_seconds` | histogram | — | Question to answer (queue, web search, generation) |
 
 Standard `python_*` / `process_*` runtime metrics are included automatically.

@@ -33,6 +33,7 @@ Default prefix: `!dozy` (configurable via `COMMAND_PREFIX`; the production deplo
 | `volume [1-100]` | `v`, `vol` | Get or set volume |
 | `remove [pos]` | `rm`, `rem` | Remove a track (defaults to last) |
 | `clear` | `clr`, `cl`, `cr` | Clear the entire queue |
+| `ask <question>` | | Ask dozai, the homelab AI (it can search the web; attach images to show it something). **Reply to its answer to follow up** |
 
 `loop` and `loopqueue` are mutually exclusive — enabling one turns the other off.
 While `loopqueue` is on, the queue never drains: `remove` can only drop upcoming
@@ -50,6 +51,10 @@ Set via environment variables (or a `.env` file when using Docker Compose):
 | `HEALTH_PORT` | No | `8080` | Port for the health server (`/healthz`, `/readyz`, `/metrics`) |
 | `LOG_LEVEL` | No | `INFO` | Python log level (`DEBUG`, `INFO`, `WARNING`, ...). `DEBUG` is very verbose |
 | `LOG_FORMAT` | No | `text` | `text` for human-readable lines, `json` for one JSON object per line (used in prod for Loki) |
+| `DOZAI_TOKEN` | No | — | dozai service token (`dozai client create robodoze -interactive`). Unset = `ask` is off |
+| `DOZAI_URL` | No | `http://dozai.dozai.svc.cluster.local:8080` | dozai's address |
+| `DOZAI_MODEL` | No | `persona:RoboDoze` | Model for `ask`: a dozai persona (its instructions are the bot's voice), `auto`, or a model name. A missing persona falls back to `auto` |
+| `DOZAI_WEB` | No | `true` | Let `ask` search the web |
 
 ## Docker image
 

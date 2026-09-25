@@ -27,6 +27,18 @@ command_duration_seconds = Histogram(
     ["command"],
 )
 
+# --- rd-ask (dozai) ----------------------------------------------------------
+asks_total = Counter(
+    "robodoze_asks_total",
+    "rd-ask questions answered, by outcome.",
+    ["status"],  # ok | error
+)
+ask_duration_seconds = Histogram(
+    "robodoze_ask_duration_seconds",
+    "Time from an rd-ask question to the answer (queue, web search and generation).",
+    buckets=(1, 2, 5, 10, 20, 40, 80, 160, 300),
+)
+
 # --- Music / streaming ------------------------------------------------------
 tracks_queued_total = Counter(
     "robodoze_tracks_queued_total",

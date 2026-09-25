@@ -37,6 +37,10 @@ bot/cogs/music/player.py MusicPlayer (per-guild player_loop task), MusicQueue, l
 bot/cogs/music/source.py yt-dlp/ffmpeg options, MusicSource, MAX_QUEUE_SIZE=500, ALONE_TIMEOUT=60
 tests/test_queue.py      pure queue / loop-mode logic
 tests/test_alone.py      has_listeners() ("is the bot alone in voice?") with SimpleNamespace fakes
+bot/cogs/ask/            rd-ask: questions to dozai (/v1, web on, per-user limit via X-Dozai-End-User).
+                         format.py pure (reply chain -> messages, 2000-char splitting, sources), client.py
+                         (aiohttp; persona fallback; errors in people's words), cog.py (command + reply listener)
+tests/test_ask.py        format helpers + the client against a local fake of dozai's /v1
 ```
 
 To add a feature area, create a new cog package under `bot/cogs/<name>/` with an `async def setup(bot)`
@@ -51,8 +55,12 @@ and add it to `EXTENSIONS` in `main.py`. Earlier `ai` and `video` cogs were trie
 | `HEALTH_PORT` | `8080` | `8080` |
 | `LOG_LEVEL` | `INFO` | `INFO` |
 | `LOG_FORMAT` | `text` | `json` (Loki/Alloy) |
+| `DOZAI_TOKEN` | unset = `ask` off | SealedSecret `robodoze-dozai` in homelab (a dozai service client, interactive) |
+| `DOZAI_URL` | `http://dozai.dozai.svc.cluster.local:8080` | same |
+| `DOZAI_MODEL` | `persona:RoboDoze` | same (a shared dozai persona; falls back to `auto`) |
+| `DOZAI_WEB` | `true` | same |
 
-All five are documented in `README.md` and `.env.example`; keep both in sync with the code
+All of these are documented in `README.md` and `.env.example`; keep both in sync with the code
 defaults. `LOG_LEVEL` / `LOG_FORMAT` are read in `utils/logging.py`.
 
 ## Release -> deploy loop
