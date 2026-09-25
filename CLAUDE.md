@@ -59,6 +59,7 @@ and add it to `EXTENSIONS` in `main.py`. Earlier `ai` and `video` cogs were trie
 | `DOZAI_URL` | `http://dozai.dozai.svc.cluster.local:8080` | same |
 | `DOZAI_MODEL` | `persona:RoboDoze` | same (a shared dozai persona; falls back to `auto`) |
 | `DOZAI_WEB` | `true` | same |
+| `DOZAI_CODE` | `true` | same (charts from dozai's code sandbox are posted as files) |
 
 All of these are documented in `README.md` and `.env.example`; keep both in sync with the code
 defaults. `LOG_LEVEL` / `LOG_FORMAT` are read in `utils/logging.py`.

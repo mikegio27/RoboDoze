@@ -55,6 +55,7 @@ Set via environment variables (or a `.env` file when using Docker Compose):
 | `DOZAI_URL` | No | `http://dozai.dozai.svc.cluster.local:8080` | dozai's address |
 | `DOZAI_MODEL` | No | `persona:RoboDoze` | Model for `ask`: a dozai persona (its instructions are the bot's voice), `auto`, or a model name. A missing persona falls back to `auto` |
 | `DOZAI_WEB` | No | `true` | Let `ask` search the web |
+| `DOZAI_CODE` | No | `true` | Let `ask` run Python in dozai's sandbox; charts are posted with the answer |
 
 ## Docker image
 

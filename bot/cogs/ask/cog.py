@@ -9,6 +9,7 @@ Images attached to the question (or a follow-up) go along.
 from __future__ import annotations
 
 import base64
+import io
 import os
 import time
 
@@ -150,15 +151,22 @@ class Ask(commands.Cog):
                     to_messages(turns), f"discord:{message.author.id}"
                 )
             chunks = answer_chunks(answer.content, answer.sources, answer.model)
+            charts = answer.charts
         except AskError as e:
             status = "error"
-            chunks = [str(e)]
+            chunks, charts = [str(e)], []
         # Each chunk replies to the previous one, so a reply to any of them
-        # leads back up the chain to the question.
+        # leads back up the chain to the question. Charts the code drew go on
+        # the last one.
         target = message
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
+            files = []
+            if i == len(chunks) - 1:
+                files = [
+                    discord.File(io.BytesIO(c.data), filename=c.name) for c in charts
+                ]
             target = await target.reply(
-                chunk, allowed_mentions=NO_PINGS, suppress_embeds=True
+                chunk, allowed_mentions=NO_PINGS, suppress_embeds=True, files=files
             )
         metrics.asks_total.labels(status=status).inc()
         metrics.ask_duration_seconds.observe(time.perf_counter() - start)
@@ -177,5 +185,6 @@ async def setup(bot: commands.Bot) -> None:
         token=token,
         model=os.getenv("DOZAI_MODEL", "persona:RoboDoze"),
         web=os.getenv("DOZAI_WEB", "true").lower() not in ("0", "false", "no"),
+        code=os.getenv("DOZAI_CODE", "true").lower() not in ("0", "false", "no"),
     )
     await bot.add_cog(Ask(bot, dozai))

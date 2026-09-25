@@ -100,6 +100,15 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
                 return web.json_response(
                     {"error": {"message": "already answering"}}, status=429
                 )
+            if body.get("code") and body["messages"][-1]["content"] == "no sandbox":
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": "code execution isn't configured on this server"
+                        }
+                    },
+                    status=400,
+                )
             return web.json_response(
                 {
                     "model": "qwen3.5:9b",
@@ -108,6 +117,13 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
                             "message": {
                                 "content": "hello",
                                 "sources": [{"n": 1, "url": "https://x"}],
+                                "files": [
+                                    {
+                                        "name": "figure-1.png",
+                                        "mime": "image/png",
+                                        "data": "iVBORw==",
+                                    }
+                                ],
                             }
                         }
                     ],
@@ -139,6 +155,20 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(body["stream"])
         self.assertEqual(headers["Authorization"], "Bearer tok")
         self.assertEqual(headers["X-Dozai-End-User"], "discord:42")
+
+    async def test_charts_and_code_fallback(self):
+        d = Dozai(self.url, "tok", "auto", web=False, code=True)
+        a = await d.ask([{"role": "user", "content": "plot"}], "discord:1")
+        self.assertEqual(
+            [(c.name, c.data) for c in a.charts], [("figure-1.png", b"\x89PNG")]
+        )
+        self.assertTrue(self.seen[0][0]["code"])
+        # A server without a sandbox: the bot asks again without code, and stops asking.
+        b = await d.ask([{"role": "user", "content": "no sandbox"}], "discord:1")
+        await d.close()
+        self.assertEqual(b.content, "hello")
+        self.assertNotIn("code", self.seen[-1][0])
+        self.assertFalse(d.code)
 
     async def test_missing_persona_falls_back_to_auto(self):
         d = Dozai(self.url, "tok", "persona:Missing", web=False)
