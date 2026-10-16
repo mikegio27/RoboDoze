@@ -58,6 +58,11 @@ audio_bytes_streamed_total = Counter(
     "robodoze_audio_bytes_streamed_total",
     "Total PCM audio bytes read and streamed to Discord voice.",
 )
+voice_lost_total = Counter(
+    "robodoze_voice_lost_total",
+    "Voice connections lost mid-queue, by whether someone rejoined before the player gave up.",
+    ["result"],  # rejoined | gave_up
+)
 source_resolve_seconds = Histogram(
     "robodoze_source_resolve_seconds",
     "yt-dlp source/stream resolution time.",

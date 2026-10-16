@@ -10,12 +10,14 @@ from discord.ext import commands
 from yt_dlp import YoutubeDL
 
 from utils import metrics
-from utils.logging import logger
+from utils.logging import YtdlLogger, logger
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdl")
 
 MAX_QUEUE_SIZE = 500
 ALONE_TIMEOUT = 60  # seconds before auto-leaving an empty voice channel
+# 48 kHz, 16-bit stereo PCM: what FFmpegPCMAudio emits and MusicSource.read counts.
+PCM_BYTES_PER_SECOND = 48000 * 2 * 2
 
 FFMPEG_OPTIONS = {
     "before_options": "-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
@@ -30,7 +32,10 @@ ytdl_opts = {
     "ignoreerrors": False,
     "logtostderr": False,
     "quiet": True,
-    "no_warnings": True,
+    # Warnings go to our logger (WARNING level) instead of being dropped; they
+    # are how yt-dlp reports degraded extraction such as a missing JS runtime.
+    "no_warnings": False,
+    "logger": YtdlLogger(),
     "default_search": "auto",
     "source_address": "0.0.0.0",
     "socket_timeout": 15,
@@ -75,7 +80,7 @@ class InvalidVoiceChannel(VoiceConnectionError):
 
 
 class MusicSource(discord.PCMVolumeTransformer):
-    def __init__(self, source, *, data, requester):
+    def __init__(self, source, *, data, requester, start_at: float = 0):
         super().__init__(source)
         self.requester = requester
         self.title = data.get("title")
@@ -83,6 +88,8 @@ class MusicSource(discord.PCMVolumeTransformer):
         self.duration = data.get("duration")
         self.thumbnail = data.get("thumbnail")
         self.is_live: bool = bool(data.get("is_live"))
+        self.start_at = start_at
+        self._bytes_read = 0
 
     def __getitem__(self, item: str):
         return self.__getattribute__(item)
@@ -90,8 +97,14 @@ class MusicSource(discord.PCMVolumeTransformer):
     def read(self) -> bytes:
         data = super().read()
         if data:
+            self._bytes_read += len(data)
             metrics.audio_bytes_streamed_total.inc(len(data))
         return data
+
+    @property
+    def position(self) -> float:
+        """Seconds into the track that have been sent to Discord so far."""
+        return self.start_at + self._bytes_read / PCM_BYTES_PER_SECOND
 
     @classmethod
     async def create_source(cls, ctx, search: str, *, download: bool = False):
@@ -175,17 +188,32 @@ class MusicSource(discord.PCMVolumeTransformer):
         return info
 
     @classmethod
-    def from_stream_info(cls, info: dict[str, Any], requester) -> "MusicSource":
-        """Create a MusicSource from pre-fetched stream info. Spawns FFmpeg subprocess."""
-        logger.debug(f"from_stream_info: spawning FFmpeg for '{info.get('title')}'")
+    def from_stream_info(
+        cls, info: dict[str, Any], requester, *, start_at: float = 0
+    ) -> "MusicSource":
+        """Create a MusicSource from pre-fetched stream info. Spawns FFmpeg subprocess.
+
+        start_at > 0 resumes a track that a voice drop cut off (input seek, so
+        ffmpeg range-requests from there rather than decoding up to it). Live
+        streams have nothing to seek in and always start at the live edge.
+        """
+        before_options = FFMPEG_OPTIONS["before_options"]
+        if start_at > 0 and not info.get("is_live"):
+            before_options = f"{before_options} -ss {start_at:.1f}"
+        else:
+            start_at = 0
+        logger.debug(
+            f"from_stream_info: spawning FFmpeg for '{info.get('title')}' (start_at={start_at:.1f}s)"
+        )
         return cls(
             discord.FFmpegPCMAudio(
                 info["url"],
-                before_options=FFMPEG_OPTIONS["before_options"],
+                before_options=before_options,
                 options=FFMPEG_OPTIONS["options"],
             ),
             data=info,
             requester=requester,
+            start_at=start_at,
         )
 
     @classmethod
@@ -194,7 +222,7 @@ class MusicSource(discord.PCMVolumeTransformer):
     ) -> "MusicSource":
         req = requester or data["requester"]
         info = await cls.fetch_stream_info(data)
-        return cls.from_stream_info(info, req)
+        return cls.from_stream_info(info, req, start_at=data.get("resume_at") or 0)
 
     @classmethod
     async def fetch_playlist_entries(cls, ctx, url: str) -> list[dict[str, Any]]:

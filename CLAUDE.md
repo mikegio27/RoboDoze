@@ -7,10 +7,10 @@ channels. Single container, single replica. It runs on the homelab k3s cluster i
 ## Commands
 
 ```bash
-python3 -m unittest discover -s tests -v   # 27 tests, <1s, needs discord.py + yt-dlp importable
+python3 -m unittest discover -s tests -v   # 62 tests, ~1s, needs discord.py + yt-dlp importable
 ruff check . && ruff format --check .      # config in pyproject.toml; currently clean
 basedpyright                               # optional; configured in pyproject (not installed by default)
-docker build -t robodoze:local .           # python:3.12-slim + ffmpeg; PyNaCl needs the gcc builder stage
+docker build -t robodoze:local .           # python:3.12-slim + ffmpeg + deno; PyNaCl needs the gcc builder stage
 docker compose up --build                  # needs .env with DISCORD_TOKEN (copy .env.example)
 ```
 
@@ -35,8 +35,10 @@ bot/utils/logging.py     "RoboDoze" logger; LOG_FORMAT=json -> one JSON object p
 bot/cogs/music/cog.py    Music cog: all commands, per-guild players dict, voice-state auto-leave
 bot/cogs/music/player.py MusicPlayer (per-guild player_loop task), MusicQueue, loop modes, requeue_finished
 bot/cogs/music/source.py yt-dlp/ffmpeg options, MusicSource, MAX_QUEUE_SIZE=500, ALONE_TIMEOUT=60
+bot/cogs/music/voice.py  GuardedVoiceClient: identity-checked cleanup, idempotent disconnect
 tests/test_queue.py      pure queue / loop-mode logic
 tests/test_alone.py      has_listeners() ("is the bot alone in voice?") with SimpleNamespace fakes
+tests/test_voice.py      voice lifecycle: guarded client, stale-player cleanup, wait-for-rejoin, resume offset
 bot/cogs/ask/            rd-ask: questions to dozai (/v1, web on, per-user limit via X-Dozai-End-User).
                          format.py pure (reply chain -> messages, 2000-char splitting, sources), client.py
                          (aiohttp; persona fallback; errors in people's words), cog.py (command + reply listener)
@@ -114,8 +116,26 @@ regressions have happened before (see commit 92803ec, "regather to prevent exces
   several commits about start-time drift and live streams. Change them only deliberately.
 - `davey` in requirements is the DAVE (Discord voice E2EE) dependency used by discord.py voice. It is
   not imported directly, so don't remove it as "unused".
-- When YouTube breaks playback, the fix is usually a `yt-dlp==` bump in `requirements.txt`. History
-  shows frequent bumps and one rollback ("fix ver"). Pin exact versions.
+- When YouTube breaks playback, the fix is usually a `yt-dlp[pin]==` bump in `requirements.txt`.
+  History shows frequent bumps and one rollback ("fix ver"). Pin exact versions. Stable releases can
+  lag YouTube changes by weeks; the nightlies (`*.devN` on PyPI) usually carry the fix first.
+- yt-dlp needs a JS runtime for YouTube: `deno` (PyPI wheel in requirements, lands in /usr/local/bin)
+  plus `yt-dlp-ejs` (from the `[pin]` extra: yt-dlp's `[default]` deps at exact versions). Without them extraction silently falls back to a
+  deprecated, format-limited path. yt-dlp warnings now reach our logs (`YtdlLogger`), so a
+  "No supported JavaScript runtime" warning in Loki means the image lost one of the two.
+- **Voice lifecycle.** Always connect with `channel.connect(cls=GuardedVoiceClient)`. discord.py's
+  stock `cleanup()` pops the guild's voice-client slot without an identity check and
+  `disconnect()` runs it up to 30s late, so a leave + quick rejoin used to orphan the new
+  connection (2026-10-16). The guarded client also makes `disconnect()` idempotent and cancels
+  discord.py's own connect/reconnect tasks first. Disconnect with `force=True`.
+  `Music.cleanup()` is the single teardown path: it stops the player (`MusicPlayer.stop()`
+  cancels its loop task) before disconnecting, and a stale player's `destroy()` only stops itself.
+- **The player never connects to voice itself.** Only user commands (`join`/`play`/`playlist`)
+  do. If voice drops mid-queue, the cut track is re-queued with `resume_at` (ffmpeg `-ss`) and
+  the player waits up to 300s (`_wait_for_voice`) for someone to rejoin, then resumes. An
+  auto-reconnect was tried in review and dropped: it raced user commands and discord.py's own
+  reconnect, couldn't be cancelled reliably (discord.py swallows `CancelledError` in
+  `disconnect`), and fought moderators who disconnect the bot on purpose.
 - Missing the Embed Links permission raises `discord.Forbidden`. The code falls back to plain text or
   a hint, so keep that fallback when you add new embeds.
 

@@ -1,6 +1,7 @@
 import asyncio
 import collections
 import random
+import time
 from typing import Any
 
 import discord
@@ -9,6 +10,17 @@ from utils import metrics
 from utils.logging import logger
 
 from .source import ALONE_TIMEOUT, MAX_QUEUE_SIZE, MusicSource, format_duration
+
+# A voice client that is registered but not connected is usually discord.py
+# mid-way through its own resume/reconnect; give it this long before telling the
+# channel that voice was lost.
+VOICE_SETTLE_TIMEOUT = 10
+# How long a player whose voice connection was lost keeps its queue, waiting for
+# someone to rejoin it (rd-join / rd-play), before giving up. Same as the idle timeout.
+VOICE_WAIT_TIMEOUT = 300
+VOICE_POLL_INTERVAL = 1
+# A track cut this close to its end counts as finished rather than resumed.
+RESUME_MIN_REMAINING = 3
 
 # Loop modes. Mutually exclusive by construction — a single field avoids the
 # nonsensical "track loop and queue loop both on" state two booleans would allow.
@@ -143,6 +155,7 @@ class MusicPlayer:
         "_event_loop",
         "_guild",
         "_loop_mode",
+        "_loop_task",
         "_prefetch_task",
         "_prefetched",
         "bot",
@@ -173,7 +186,7 @@ class MusicPlayer:
         self._alone_task = None
 
         logger.debug(f"[{self._guild}] MusicPlayer created in #{self._channel}")
-        asyncio.ensure_future(self.player_loop())
+        self._loop_task = asyncio.ensure_future(self.player_loop())
 
     def _after_play(self, error: Exception | None) -> None:
         if error:
@@ -262,6 +275,77 @@ class MusicPlayer:
         finally:
             self._prefetch_task = None
 
+    def _voice_lost(self) -> bool:
+        vc = self._guild.voice_client
+        return vc is None or not vc.is_connected()
+
+    async def _wait_for_voice(self) -> bool:
+        """Wait for the guild's voice connection to be usable again.
+
+        Brief gaps are discord.py resuming or reconnecting on its own. A real
+        loss (Discord dropped the bot, a moderator disconnected it) is
+        announced, and the player keeps its queue for VOICE_WAIT_TIMEOUT so
+        rd-join / rd-play picks up where it left off. The player never
+        reconnects by itself: that raced user commands and discord.py's own
+        reconnect logic, and would fight a deliberate disconnect.
+
+        Returns False if voice did not come back in time.
+        """
+        started = time.monotonic()
+        announced = False
+        while self._voice_lost():
+            waited = time.monotonic() - started
+            if waited >= VOICE_WAIT_TIMEOUT:
+                if announced:
+                    metrics.voice_lost_total.labels(result="gave_up").inc()
+                logger.warning(
+                    f"[{self._guild}] _wait_for_voice: no voice connection after {waited:.0f}s — giving up"
+                )
+                return False
+            if not announced and waited >= VOICE_SETTLE_TIMEOUT:
+                announced = True
+                logger.warning(
+                    f"[{self._guild}] _wait_for_voice: voice connection lost — keeping the queue "
+                    f"for {VOICE_WAIT_TIMEOUT}s"
+                )
+                try:
+                    await self._channel.send(
+                        "Lost the voice connection. Use `join` or `play` within "
+                        f"{VOICE_WAIT_TIMEOUT // 60} minutes to pick up where it left off."
+                    )
+                except discord.HTTPException:
+                    pass
+            await asyncio.sleep(VOICE_POLL_INTERVAL)
+        if announced:
+            metrics.voice_lost_total.labels(result="rejoined").inc()
+            logger.info(f"[{self._guild}] _wait_for_voice: voice is back — resuming")
+        return True
+
+    async def _hold_until_voice(self, item: Any) -> bool:
+        """Voice is gone: put ``item`` back at the front and wait for a rejoin.
+
+        Returns False (after destroying the player) if nobody rejoined.
+        """
+        # Player-loop tail semantics: this loop is the queue's only consumer and
+        # is not parked in get(), so insert_front is safe here.
+        self.queue.insert_front(item)
+        self._cancel_prefetch()
+        # "Alone in the channel" means nothing without a channel; the hold has
+        # its own timeout, and a countdown started before the drop would cut it short.
+        if self._alone_task and not self._alone_task.done():
+            self._alone_task.cancel()
+        self._alone_task = None
+        if await self._wait_for_voice():
+            return True
+        try:
+            await self._channel.send(
+                "Nobody brought me back to voice — dropping the queue. 👋"
+            )
+        except discord.HTTPException:
+            pass
+        self.destroy(self._guild)
+        return False
+
     async def _regather_with_retry(self, data: dict):
         title = data.get("title", "<unknown>")
         logger.debug(
@@ -311,10 +395,21 @@ class MusicPlayer:
                 self.destroy(self._guild)
                 return
 
+            item = source  # the queue entry as dequeued, for putting it back
             try:
+                if self._voice_lost():
+                    if await self._hold_until_voice(item):
+                        continue
+                    return
+
                 if not isinstance(source, MusicSource):
                     queued = source
-                    self._current_raw = queued
+                    # resume_at is a one-shot offset for a track a voice drop cut
+                    # off; a loop re-queue of this track must start from 0 again.
+                    self._current_raw = {
+                        k: v for k, v in queued.items() if k != "resume_at"
+                    }
+                    start_at = queued.get("resume_at") or 0
                     queued_url = queued.get("webpage_url")
                     prefetched_url = (
                         self._prefetched.get("webpage_url")
@@ -332,7 +427,9 @@ class MusicPlayer:
                         info = self._prefetched
                         self._prefetched = None
                         self._prefetch_task = None
-                        source = MusicSource.from_stream_info(info, queued["requester"])
+                        source = MusicSource.from_stream_info(
+                            info, queued["requester"], start_at=start_at
+                        )
                         logger.debug(
                             f"[{self._guild}] player_loop: prefetch hit — FFmpeg spawned immediately"
                         )
@@ -351,7 +448,7 @@ class MusicPlayer:
                                 self._prefetched = None
                                 self._prefetch_task = None
                                 source = MusicSource.from_stream_info(
-                                    info, queued["requester"]
+                                    info, queued["requester"], start_at=start_at
                                 )
                                 logger.debug(
                                     f"[{self._guild}] player_loop: prefetch hit (awaited)"
@@ -363,6 +460,12 @@ class MusicPlayer:
                                 self._cancel_prefetch()
                                 source = await self._regather_with_retry(queued)
                         except (TimeoutError, asyncio.CancelledError) as e:
+                            # A cancelled *prefetch* degrades to a regather, but if
+                            # this loop itself is being cancelled (cleanup ->
+                            # stop()), the cancellation must propagate.
+                            task = asyncio.current_task()
+                            if task is not None and task.cancelling():
+                                raise
                             logger.warning(
                                 f"[{self._guild}] player_loop: prefetch await failed ({type(e).__name__}) — regathering"
                             )
@@ -385,13 +488,22 @@ class MusicPlayer:
                 source.volume = self.volume
                 self.current = source
 
+                # No await between here and vc.play(): a cancellation can't strand
+                # the FFmpeg process this source has already spawned.
                 vc = self._guild.voice_client
-                if not vc or not vc.is_connected():
-                    logger.error(
-                        f"[{self._guild}] player_loop: voice client not connected when trying to play "
-                        f"'{source.title}' (vc={vc!r}) — destroying player"
+                if vc is None or not vc.is_connected():
+                    # Voice went away while the track was resolving. Don't hold
+                    # FFmpeg (or the stream URL, which expires) during the wait:
+                    # drop the source and re-resolve once voice is back.
+                    logger.warning(
+                        f"[{self._guild}] player_loop: voice lost while resolving "
+                        f"'{source.title}' — putting it back"
                     )
-                    self.destroy(self._guild)
+                    source.cleanup()
+                    self.current = None
+                    self._current_raw = None
+                    if await self._hold_until_voice(item):
+                        continue
                     return
 
                 if vc.is_playing():
@@ -462,6 +574,30 @@ class MusicPlayer:
                 source.cleanup()
                 self.current = None
 
+                # A skip or a natural end leaves the voice client connected; a
+                # cleanup()/leave cancels this task before it gets here. So a
+                # dead voice client now means voice dropped mid-track: put the
+                # track back at the front to resume where it was cut. The next
+                # iteration finds voice gone and waits for a rejoin.
+                resume_at = 0 if source.is_live else source.position
+                cut_short = (
+                    source.is_live
+                    or not source.duration
+                    or resume_at < source.duration - RESUME_MIN_REMAINING
+                )
+                if self._voice_lost() and self._current_raw is not None and cut_short:
+                    logger.warning(
+                        f"[{self._guild}] player_loop: voice dropped {format_duration(int(resume_at))} "
+                        f"into '{source.title}' — re-queued to resume there"
+                    )
+                    self.queue.insert_front(
+                        {**self._current_raw, "resume_at": resume_at}
+                    )
+                    # Not finished, so loop modes must not re-queue it a second time.
+                    self._current_raw = None
+                    # The in-flight prefetch is for the track after this one.
+                    self._cancel_prefetch()
+
                 requeue_finished(
                     self.queue, self._current_raw, self._loop_mode, f"[{self._guild}] "
                 )
@@ -483,12 +619,26 @@ class MusicPlayer:
 
         logger.info(f"[{self._guild}] player_loop: bot closed, exiting loop")
 
+    def stop(self) -> None:
+        """Stop this player for good: its loop, prefetch and auto-leave timer.
+
+        Called by Music.cleanup(). Before this existed, cleanup() only dropped
+        the player from the registry and its player_loop kept running; that
+        orphan could later destroy() a *newer* session in the same guild.
+        Playback itself stops when the voice client disconnects (discord.py
+        cleans up the playing source when its AudioPlayer exits).
+        """
+        self._cancel_prefetch()
+        if self._alone_task and not self._alone_task.done():
+            self._alone_task.cancel()
+        self._alone_task = None
+        if not self._loop_task.done():
+            self._loop_task.cancel()
+
     def destroy(self, guild) -> asyncio.Task:
-        logger.info(
-            f"[{guild}] destroy() called — cancelling prefetch and scheduling cleanup"
-        )
+        logger.info(f"[{guild}] destroy() called — scheduling cleanup")
         self._cancel_prefetch()
         if self._alone_task and not self._alone_task.done():
             self._alone_task.cancel()
             self._alone_task = None
-        return self._event_loop.create_task(self._cog.cleanup(guild))
+        return self._event_loop.create_task(self._cog.cleanup(guild, player=self))

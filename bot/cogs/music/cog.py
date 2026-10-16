@@ -24,6 +24,7 @@ from .source import (
     format_duration,
     is_playlist_url,
 )
+from .voice import GuardedVoiceClient, settle_voice_client
 
 
 class Music(commands.Cog):
@@ -33,30 +34,47 @@ class Music(commands.Cog):
         self.bot = bot
         self.players = {}
 
-    async def cleanup(self, guild) -> None:
+    async def cleanup(self, guild, *, player: MusicPlayer | None = None) -> None:
+        """Stop the guild's player and disconnect its voice client.
+
+        ``player`` is set when a player asks to be torn down (MusicPlayer.destroy).
+        If the guild has a different player by the time this runs, the caller is
+        stale: only it is stopped, and the voice client and registry slot, which
+        belong to the newer session, are left alone. Without that check a stale
+        player's late destroy() disconnected whatever session came after it.
+        """
+        current = self.players.get(guild.id)
+        if player is not None and current is not player:
+            logger.info(
+                f"[{guild}] cleanup() from a stale player — stopping it, leaving the current session alone"
+            )
+            player.stop()
+            return
+
         logger.info(
             f"[{guild}] cleanup() called — disconnecting voice client and removing player"
         )
-        try:
-            vc = guild.voice_client
-            if vc:
-                logger.debug(
-                    f"[{guild}] cleanup: voice client in '{vc.channel}', disconnecting"
-                )
-                await vc.disconnect()
-            else:
-                logger.debug(f"[{guild}] cleanup: no voice client to disconnect")
-        except AttributeError:
-            logger.debug(
-                f"[{guild}] cleanup: AttributeError on voice client disconnect (already gone)"
-            )
-        try:
+        # Drop and stop the player *before* the disconnect: disconnect() can wait up
+        # to 30s for Discord's confirmation, and the player loop must not react to
+        # the stopped track (or destroy() again) in the meantime.
+        if current is not None:
             del self.players[guild.id]
-            logger.debug(f"[{guild}] cleanup: player removed from registry")
-        except KeyError:
+            current.stop()
+            logger.debug(f"[{guild}] cleanup: player stopped and removed from registry")
+        else:
+            logger.debug(f"[{guild}] cleanup: no player in registry")
+
+        vc = guild.voice_client
+        if vc:
             logger.debug(
-                f"[{guild}] cleanup: player was not in registry (already removed)"
+                f"[{guild}] cleanup: voice client in '{vc.channel}', disconnecting"
             )
+            # force=True: on a client that isn't connected (discord.py mid-reconnect),
+            # force=False skips the actual leave but still drops the registry entry,
+            # leaving a live connection nothing tracks.
+            await vc.disconnect(force=True)
+        else:
+            logger.debug(f"[{guild}] cleanup: no voice client to disconnect")
 
     async def cog_check(self, ctx):
         if not ctx.guild:
@@ -139,7 +157,12 @@ class Music(commands.Cog):
             )
         elif isinstance(error, commands.CommandInvokeError):
             original = error.original
-            if isinstance(original, discord.Forbidden):
+            if isinstance(original, VoiceConnectionError):
+                try:
+                    await ctx.send(str(original))
+                except discord.HTTPException:
+                    pass
+            elif isinstance(original, discord.Forbidden):
                 try:
                     await ctx.send(
                         "I'm missing the **Embed Links** permission in this channel. "
@@ -185,6 +208,12 @@ class Music(commands.Cog):
 
         vc = ctx.voice_client
 
+        if vc and not vc.is_connected():
+            # Still connecting (another command's join), tearing down, or dead.
+            # It holds the guild's slot either way, so connect() would fail with
+            # "Already connected": wait it out, or clear it if it's dead.
+            vc = await settle_voice_client(ctx.guild)
+
         if vc:
             if vc.channel and vc.channel.id == channel.id:
                 logger.debug(
@@ -201,10 +230,20 @@ class Music(commands.Cog):
         else:
             logger.debug(f"[{ctx.guild}] connect_: connecting to '{channel}'")
             try:
-                await channel.connect()
+                await channel.connect(cls=GuardedVoiceClient)
             except TimeoutError:
                 raise VoiceConnectionError(
                     f"Connecting to channel: <{channel}> timed out."
+                )
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise  # this command itself is being cancelled
+                # Our handshake was cancelled from outside (a leave or cleanup
+                # tore the connection down). discord.ext swallows a bare
+                # CancelledError silently, so turn it into an error the user sees.
+                raise VoiceConnectionError(
+                    "The voice connection was closed before it finished — try again."
                 )
 
         logger.info(f"[{ctx.guild}] connect_: joined '{channel}'")
@@ -221,7 +260,7 @@ class Music(commands.Cog):
         await ctx.typing()
 
         vc = ctx.voice_client
-        if not vc:
+        if not vc or not vc.is_connected():
             await ctx.invoke(self.connect_)
 
         player = self.get_player(ctx)
@@ -270,7 +309,7 @@ class Music(commands.Cog):
         await ctx.typing()
 
         vc = ctx.voice_client
-        if not vc:
+        if not vc or not vc.is_connected():
             await ctx.invoke(self.connect_)
 
         player = self.get_player(ctx)
@@ -708,7 +747,9 @@ class Music(commands.Cog):
     async def leave_(self, ctx):
         """Stop the currently playing song and destroy the player."""
         vc = ctx.voice_client
-        if not vc or not vc.is_connected():
+        # A player waiting for voice to come back has no live connection but still
+        # holds a queue; leave must be able to drop it.
+        if (not vc or not vc.is_connected()) and ctx.guild.id not in self.players:
             embed = discord.Embed(
                 title="",
                 description="I'm not connected to a voice channel",

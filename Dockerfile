@@ -26,9 +26,15 @@ COPY bot/ /app/bot/
 
 RUN chown -R botuser:botuser /app
 
+# deno (from requirements.txt, lands in /usr/local/bin) is the JS runtime yt-dlp
+# uses to solve YouTube's player challenges; without it YouTube extraction falls
+# back to a deprecated, format-limited path. botuser has no home directory, so
+# point deno's and yt-dlp's caches somewhere writable.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app/bot
+    PYTHONPATH=/app/bot \
+    XDG_CACHE_HOME=/tmp/.cache \
+    DENO_DIR=/tmp/.cache/deno
 
 EXPOSE 8080
 

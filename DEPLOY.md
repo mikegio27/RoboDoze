@@ -140,6 +140,7 @@ metadata:
 | `robodoze_audio_bytes_streamed_total` | counter | — | PCM bytes streamed to Discord |
 | `robodoze_stream_errors_total` | counter | `stage` (resolve/playback) | Stream failures |
 | `robodoze_source_resolve_seconds` | histogram | — | yt-dlp resolution time |
+| `robodoze_voice_lost_total` | counter | `result` (rejoined/gave_up) | Voice lost mid-queue; whether someone rejoined within 5 min |
 | `robodoze_asks_total` | counter | `status` (ok/error) | `ask` questions answered |
 | `robodoze_ask_duration_seconds` | histogram | — | Question to answer (queue, web search, generation) |
 

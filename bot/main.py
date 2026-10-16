@@ -67,6 +67,11 @@ class RoboDoze(commands.Bot):
         metrics.commands_total.labels(command=name, status="error").inc()
 
     async def close(self) -> None:
+        # Stop players before dropping voice, or each one sees its track cut by the
+        # disconnect and starts the resume / wait-for-voice path during shutdown.
+        music = self.get_cog("Music")
+        for player in list(getattr(music, "players", {}).values()):
+            player.stop()
         for vc in list(self.voice_clients):
             try:
                 await vc.disconnect(force=True)

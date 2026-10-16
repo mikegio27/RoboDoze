@@ -112,4 +112,5 @@ tests on every push and only builds the image if they pass. Playback itself is n
 
 - Python 3.12+
 - ffmpeg (included in the Docker image)
-- discord.py, yt-dlp, aiohttp, PyNaCl
+- discord.py, yt-dlp (with the `pin` extra, for yt-dlp-ejs), aiohttp, PyNaCl
+- deno, the JS runtime yt-dlp uses for YouTube (installed from PyPI via requirements.txt)

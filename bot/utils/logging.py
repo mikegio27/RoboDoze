@@ -40,3 +40,39 @@ if not logger.hasHandlers():
             logging.Formatter("[%(asctime)s] [%(levelname)s] %(name)s: %(message)s")
         )
     logger.addHandler(_handler)
+
+    # discord.py only installs its own handler from Client.run(); main.py uses
+    # Client.start(), so without this its loggers have no handler and voice close
+    # codes / reconnect attempts never reach Loki. Floored at INFO: discord.py's
+    # DEBUG output (gateway payloads, every RTP packet batch) would drown ours.
+    discord_logger = logging.getLogger("discord")
+    discord_logger.setLevel(max(LOG_LEVEL, logging.INFO))
+    discord_logger.addHandler(_handler)
+    discord_logger.propagate = False
+
+
+class YtdlLogger:
+    """Adapter passed to YoutubeDL(logger=...) so its warnings reach our logs.
+
+    yt-dlp's own "no_warnings" would hide things like "No supported JavaScript
+    runtime could be found", which degrades YouTube extraction silently.
+    Errors are logged at DEBUG only: yt-dlp raises them as exceptions too, and
+    the callers already log those.
+    """
+
+    def debug(self, msg: str) -> None:
+        logger.debug(f"yt-dlp: {msg}")
+
+    def info(self, msg: str) -> None:
+        logger.debug(f"yt-dlp: {msg}")
+
+    def warning(self, msg: str) -> None:
+        # YouTube's own notices ("1 unavailable video is hidden") show up on most
+        # real playlists and aren't actionable.
+        if "YouTube said: INFO -" in msg:
+            logger.debug(f"yt-dlp: {msg}")
+            return
+        logger.warning(f"yt-dlp: {msg}")
+
+    def error(self, msg: str) -> None:
+        logger.debug(f"yt-dlp: {msg}")
