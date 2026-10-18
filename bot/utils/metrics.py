@@ -39,6 +39,17 @@ ask_duration_seconds = Histogram(
     buckets=(1, 2, 5, 10, 20, 40, 80, 160, 300),
 )
 
+# --- rd-games / rd-game (dozy-lobby) -------------------------------------------
+games_commands_total = Counter(
+    "robodoze_games_commands_total",
+    "Game-server commands, by command and result.",
+    # command: games | game | start | stop | restart
+    # result: ok | forced | cancelled | players_online | pending | usage | denied |
+    #   not_found | ambiguous | already_running | host_full | failed | stopped |
+    #   timeout | error (a watched start is counted once, when it finishes)
+    ["command", "result"],
+)
+
 # --- Music / streaming ------------------------------------------------------
 tracks_queued_total = Counter(
     "robodoze_tracks_queued_total",

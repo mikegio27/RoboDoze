@@ -21,7 +21,7 @@ def _require_token() -> str:
 
 token = _require_token()
 
-EXTENSIONS = ["cogs.music", "cogs.ask"]
+EXTENSIONS = ["cogs.music", "cogs.ask", "cogs.games"]
 
 intents = discord.Intents.default()
 intents.message_content = True

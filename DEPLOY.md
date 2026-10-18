@@ -79,8 +79,9 @@ reconciled by Flux:
 | File | Contents |
 |---|---|
 | `deployment.yaml` | the pinned `image:`, `replicas: 1`, `strategy: Recreate`, probes, `prometheus.io/*` annotations |
-| `configmap.yaml` | `COMMAND_PREFIX` (`rd-`), `LOG_LEVEL`, `LOG_FORMAT` (`json`), `DOZAI_URL`, `DOZAI_MODEL` |
+| `configmap.yaml` | `COMMAND_PREFIX` (`rd-`), `LOG_LEVEL`, `LOG_FORMAT` (`json`), `DOZAI_URL`, `DOZAI_MODEL`; `LOBBY_URL` and `GAMES_GUILD_IDS` if they differ from the defaults |
 | `dozai-sealed-secret.yaml` | `DOZAI_TOKEN`: the dozai service client `robodoze` (interactive), sealed |
+| (SealedSecret) | `LOBBY_BOT_TOKEN`: lobby's bot API token (dozy-lobby), sealed. Unset = the game-server commands are off |
 | `namespace.yaml`, `kustomization.yaml` | namespace and kustomize wiring |
 
 `DISCORD_TOKEN` comes from the Secret `robodoze-secret`, which is created out of band and
@@ -143,5 +144,6 @@ metadata:
 | `robodoze_voice_lost_total` | counter | `result` (rejoined/gave_up) | Voice lost mid-queue; whether someone rejoined within 5 min |
 | `robodoze_asks_total` | counter | `status` (ok/error) | `ask` questions answered |
 | `robodoze_ask_duration_seconds` | histogram | — | Question to answer (queue, web search, generation) |
+| `robodoze_games_commands_total` | counter | `command` (games/game/start/stop/restart), `result` | Game-server commands. `result`: ok, forced, cancelled, players_online, pending, usage, denied (wrong guild), not_found, ambiguous, already_running, host_full, failed, stopped, timeout, error. A watched start counts once, when it finishes |
 
 Standard `python_*` / `process_*` runtime metrics are included automatically.

@@ -34,6 +34,14 @@ Default prefix: `!dozy` (configurable via `COMMAND_PREFIX`; the production deplo
 | `remove [pos]` | `rm`, `rem` | Remove a track (defaults to last) |
 | `clear` | `clr`, `cl`, `cr` | Clear the entire queue |
 | `ask <question>` | | Ask dozai, the homelab AI (it can search the web; attach images to show it something). **Reply to its answer to follow up** |
+| `games` | | List the game servers (dozy-lobby): status, game, who's on, address |
+| `game <name>` | | One server's details: status, address, players, idle countdown, last played |
+| `game start <name>` | | Start a server; the reply updates until it's up (or fails) |
+| `game stop <name>` / `game restart <name>` | | Stop or restart; if people are playing, asks you to confirm first |
+
+The game-server commands only work in the DozyNet and HCH Discords (`GAMES_GUILD_IDS`). Names match
+exactly, case-insensitively, or by a unique prefix of the server's name or display name. New servers
+are made at <https://home.dozydelta.com/games>.
 
 `loop` and `loopqueue` are mutually exclusive — enabling one turns the other off.
 While `loopqueue` is on, the queue never drains: `remove` can only drop upcoming
@@ -56,6 +64,9 @@ Set via environment variables (or a `.env` file when using Docker Compose):
 | `DOZAI_MODEL` | No | `persona:RoboDoze` | Model for `ask`: a dozai persona (its instructions are the bot's voice), `auto`, or a model name. A missing persona falls back to `auto` |
 | `DOZAI_WEB` | No | `true` | Let `ask` search the web |
 | `DOZAI_CODE` | No | `true` | Let `ask` run Python in dozai's sandbox; charts are posted with the answer |
+| `LOBBY_BOT_TOKEN` | No | — | dozy-lobby's bot API token. Unset = `games` / `game` are off |
+| `LOBBY_URL` | No | `http://lobby.dozy-lobby.svc.cluster.local:8081` | lobby's bot API address |
+| `GAMES_GUILD_IDS` | No | `1554708052593348729,385602741101264896` | Comma list of guilds where the game-server commands work (DozyNet, HCH); empty = the default |
 
 ## Docker image
 

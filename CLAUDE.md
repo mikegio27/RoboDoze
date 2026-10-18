@@ -7,7 +7,7 @@ channels. Single container, single replica. It runs on the homelab k3s cluster i
 ## Commands
 
 ```bash
-python3 -m unittest discover -s tests -v   # 62 tests, ~1s, needs discord.py + yt-dlp importable
+python3 -m unittest discover -s tests -v   # 85 tests, ~2s, needs discord.py + yt-dlp importable
 ruff check . && ruff format --check .      # config in pyproject.toml; currently clean
 basedpyright                               # optional; configured in pyproject (not installed by default)
 docker build -t robodoze:local .           # python:3.12-slim + ffmpeg + deno; PyNaCl needs the gcc builder stage
@@ -28,7 +28,7 @@ docker compose up --build                  # needs .env with DISCORD_TOKEN (copy
 ## Layout
 
 ```
-bot/main.py              RoboDoze(commands.Bot): intents, loads EXTENSIONS=["cogs.music"], SIGTERM -> close()
+bot/main.py              RoboDoze(commands.Bot): intents, loads EXTENSIONS (music, ask, games), SIGTERM -> close()
 bot/health.py            aiohttp server on HEALTH_PORT: /healthz, /readyz (503 until on_ready), /metrics
 bot/utils/metrics.py     all Prometheus metrics (robodoze_* names); live gauges bound at scrape time
 bot/utils/logging.py     "RoboDoze" logger; LOG_FORMAT=json -> one JSON object per line
@@ -43,6 +43,11 @@ bot/cogs/ask/            rd-ask: questions to dozai (/v1, web on, per-user limit
                          format.py pure (reply chain -> messages, 2000-char splitting, sources), client.py
                          (aiohttp; persona fallback; errors in people's words), cog.py (command + reply listener)
 tests/test_ask.py        format helpers + the client against a local fake of dozai's /v1
+bot/cogs/games/          rd-games, rd-game [start|stop|restart] <name>: dozy-lobby's game servers via its
+                         /bot API. format.py pure (list/detail text, name resolution, start progress),
+                         client.py (aiohttp; Caller headers; problem+json -> LobbyError in people's words),
+                         cog.py (cog_check guild gate, background start watcher, stop ConfirmView)
+tests/test_games.py      formatting, resolution, guild check, and the cog against a local fake of lobby's /bot
 ```
 
 To add a feature area, create a new cog package under `bot/cogs/<name>/` with an `async def setup(bot)`
@@ -62,6 +67,9 @@ and add it to `EXTENSIONS` in `main.py`. Earlier `ai` and `video` cogs were trie
 | `DOZAI_MODEL` | `persona:RoboDoze` | same (a shared dozai persona; falls back to `auto`) |
 | `DOZAI_WEB` | `true` | same |
 | `DOZAI_CODE` | `true` | same (charts from dozai's code sandbox are posted as files) |
+| `LOBBY_BOT_TOKEN` | unset = `games` off | SealedSecret in homelab (lobby's bot API token) |
+| `LOBBY_URL` | `http://lobby.dozy-lobby.svc.cluster.local:8081` | same |
+| `GAMES_GUILD_IDS` | `1554708052593348729,385602741101264896` (DozyNet, HCH) | same |
 
 All of these are documented in `README.md` and `.env.example`; keep both in sync with the code
 defaults. `LOG_LEVEL` / `LOG_FORMAT` are read in `utils/logging.py`.
@@ -136,6 +144,10 @@ regressions have happened before (see commit 92803ec, "regather to prevent exces
   auto-reconnect was tried in review and dropped: it raced user commands and discord.py's own
   reconnect, couldn't be cancelled reliably (discord.py swallows `CancelledError` in
   `disconnect`), and fought moderators who disconnect the bot on purpose.
+- **Game-server commands are guild-gated.** `Games.cog_check` allows only `GAMES_GUILD_IDS`
+  (no DMs), so every command added to that cog is covered; lobby checks `X-Discord-Guild-Id` again.
+  Keep both. A start is watched by one background task per server (`_starts`); a second start
+  points at the first message instead of starting another watcher.
 - Missing the Embed Links permission raises `discord.Forbidden`. The code falls back to plain text or
   a hint, so keep that fallback when you add new embeds.
 
