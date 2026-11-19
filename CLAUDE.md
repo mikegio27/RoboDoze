@@ -7,7 +7,7 @@ channels. Single container, single replica. It runs on the homelab k3s cluster i
 ## Commands
 
 ```bash
-python3 -m unittest discover -s tests -v   # 85 tests, ~2s, needs discord.py + yt-dlp importable
+python3 -m unittest discover -s tests -v   # 95 tests, ~2s, needs discord.py + yt-dlp importable
 ruff check . && ruff format --check .      # config in pyproject.toml; currently clean
 basedpyright                               # optional; configured in pyproject (not installed by default)
 docker build -t robodoze:local .           # python:3.12-slim + ffmpeg + deno; PyNaCl needs the gcc builder stage
@@ -131,6 +131,11 @@ regressions have happened before (see commit 92803ec, "regather to prevent exces
   plus `yt-dlp-ejs` (from the `[pin]` extra: yt-dlp's `[default]` deps at exact versions). Without them extraction silently falls back to a
   deprecated, format-limited path. yt-dlp warnings now reach our logs (`YtdlLogger`), so a
   "No supported JavaScript runtime" warning in Loki means the image lost one of the two.
+- **Wait for `available_at` before ffmpeg touches a stream URL.** Since 2026-11 YouTube 403s a
+  googlevideo URL fetched before the `available_at` yt-dlp puts on the format (~4-15s; it tracks the
+  ad it would have shown). yt-dlp's own downloader sleeps for it, but we hand the URL to ffmpeg, so
+  `fetch_stream_info` does the wait (`seconds_until_available`, capped at `MAX_AVAILABLE_AT_WAIT`).
+  Any new path that resolves a URL for ffmpeg must go through it. A prefetch absorbs the wait.
 - **Voice lifecycle.** Always connect with `channel.connect(cls=GuardedVoiceClient)`. discord.py's
   stock `cleanup()` pops the guild's voice-client slot without an identity check and
   `disconnect()` runs it up to 30s late, so a leave + quick rejoin used to orphan the new

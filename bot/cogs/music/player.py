@@ -9,7 +9,17 @@ import discord
 from utils import metrics
 from utils.logging import logger
 
-from .source import ALONE_TIMEOUT, MAX_QUEUE_SIZE, MusicSource, format_duration
+from .source import (
+    ALONE_TIMEOUT,
+    MAX_AVAILABLE_AT_WAIT,
+    MAX_QUEUE_SIZE,
+    MusicSource,
+    format_duration,
+)
+
+# A prefetch is a yt-dlp resolve (30s timeout) plus the wait for the URL's
+# available_at, so give an in-flight one room for both before regathering.
+PREFETCH_AWAIT_TIMEOUT = 30 + MAX_AVAILABLE_AT_WAIT
 
 # A voice client that is registered but not connected is usually discord.py
 # mid-way through its own resume/reconnect; give it this long before telling the
@@ -435,10 +445,10 @@ class MusicPlayer:
                         )
                     elif self._prefetch_task and not self._prefetch_task.done():
                         logger.debug(
-                            f"[{self._guild}] player_loop: prefetch task in-flight, awaiting (timeout=30s)"
+                            f"[{self._guild}] player_loop: prefetch task in-flight, awaiting (timeout={PREFETCH_AWAIT_TIMEOUT}s)"
                         )
                         try:
-                            async with asyncio.timeout(30):
+                            async with asyncio.timeout(PREFETCH_AWAIT_TIMEOUT):
                                 await self._prefetch_task
                             if (
                                 self._prefetched

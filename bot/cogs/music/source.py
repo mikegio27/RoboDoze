@@ -16,6 +16,11 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdl")
 
 MAX_QUEUE_SIZE = 500
 ALONE_TIMEOUT = 60  # seconds before auto-leaving an empty voice channel
+# Ceiling on the wait for a stream URL's available_at, so a bogus timestamp
+# can't park the player. YouTube's wait tracks the ad it would have shown
+# (~4-5s for a skippable one, ~15s seen for others), so leave room for a
+# 30s unskippable ad.
+MAX_AVAILABLE_AT_WAIT = 60
 # 48 kHz, 16-bit stereo PCM: what FFmpegPCMAudio emits and MusicSource.read counts.
 PCM_BYTES_PER_SECOND = 48000 * 2 * 2
 
@@ -61,6 +66,24 @@ def is_playlist_url(url: str) -> bool:
     except ValueError:
         # urlparse/parse_qs raise ValueError on malformed input (e.g. bad IPv6 literals).
         return False
+
+
+def seconds_until_available(info: dict[str, Any], now: float | None = None) -> float:
+    """Seconds to wait before the stream URL in `info` may be fetched.
+
+    Since 2026-11 YouTube hands out googlevideo URLs that answer 403 until a
+    few seconds after they were issued. yt-dlp reports that time as the
+    format's `available_at` and its own downloader sleeps until then ("Sleeping
+    N seconds as required by the site"), but we pass the URL to ffmpeg, so the
+    wait is ours to do. Mirrors yt-dlp's downloader: the max over the selected
+    format(s). Clamped to [0, MAX_AVAILABLE_AT_WAIT].
+    """
+    formats = info.get("requested_formats") or [info]
+    available_at = max((f.get("available_at") or 0 for f in formats), default=0)
+    if not available_at:
+        return 0.0
+    wait = available_at - (time.time() if now is None else now)
+    return min(max(wait, 0.0), MAX_AVAILABLE_AT_WAIT)
 
 
 def format_duration(seconds: int | None) -> str:
@@ -143,7 +166,22 @@ class MusicSource(discord.PCMVolumeTransformer):
 
         data: dict[str, Any] = raw  # type: ignore[assignment]
         if "entries" in data:
-            data = data["entries"][0]
+            # A search that matched nothing comes back as an empty result list
+            # rather than None.
+            entries = [e for e in data["entries"] if e]
+            if not entries:
+                logger.warning(
+                    f"[{ctx.guild}] create_source: no results for '{search}'"
+                )
+                await ctx.send(
+                    embed=discord.Embed(
+                        title="",
+                        description="No results found.",
+                        color=discord.Color.red(),
+                    )
+                )
+                return None
+            data = entries[0]
 
         logger.debug(
             f"[{ctx.guild}] create_source: resolved '{search}' -> '{data.get('title')}' ({data.get('webpage_url')})"
@@ -184,7 +222,16 @@ class MusicSource(discord.PCMVolumeTransformer):
         if raw is None:
             raise ValueError(f"No stream data returned for {data['webpage_url']}")
         info: dict[str, Any] = raw  # type: ignore[assignment]
-        logger.debug(f"fetch_stream_info: got stream URL for '{data.get('title')}'")
+        wait = seconds_until_available(info)
+        logger.debug(
+            f"fetch_stream_info: got stream URL for '{data.get('title')}' "
+            f"(waiting {wait:.1f}s for available_at)"
+        )
+        # Outside the resolve timeout and the resolve metric: this is YouTube's
+        # embargo on the URL, not yt-dlp work. A prefetch absorbs it in the
+        # background while the current track plays.
+        if wait > 0:
+            await asyncio.sleep(wait)
         return info
 
     @classmethod
