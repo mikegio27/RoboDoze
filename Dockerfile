@@ -1,5 +1,5 @@
 # Stage 1: build Python deps (needs gcc for PyNaCl C extension)
-FROM python:3.12-slim AS builder
+FROM python:3.15-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc python3-dev libffi-dev \
@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 
 # Stage 2: lean runtime image
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
